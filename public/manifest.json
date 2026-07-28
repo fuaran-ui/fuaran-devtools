@@ -1,0 +1,24 @@
+{
+  "manifest_version": 3,
+  "name": "Fuaran DevTools",
+  "version": "0.1.0",
+  "description": "Inspect any Fuaran-rendered page at the typed-tree level: live tree view, click-to-select, and per-node binding and geometry detail.",
+  "devtools_page": "devtools.html",
+  "background": {
+    "service_worker": "background.js"
+  },
+  "content_scripts": [
+    {
+      "matches": ["<all_urls>"],
+      "js": ["content.js"],
+      "run_at": "document_idle"
+    }
+  ],
+  "web_accessible_resources": [
+    {
+      "resources": ["page-relay.js"],
+      "matches": ["<all_urls>"]
+    }
+  ],
+  "permissions": []
+}

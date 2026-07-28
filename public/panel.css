@@ -1,0 +1,330 @@
+/* Fuaran DevTools panel — light/dark by the browser's own DevTools theme.
+   The panel deliberately borrows the host DevTools' type scale and neutral
+   surfaces rather than the Fuaran brand: it is a tool that sits beside
+   Elements and Network, and reading as a foreign UI inside that strip costs
+   more than the branding buys. */
+
+:root {
+  color-scheme: light dark;
+  --bg: #ffffff;
+  --bg-soft: #f6f7f9;
+  --line: #d8dbe0;
+  --ink: #1b1d22;
+  --ink-soft: #6b7280;
+  --accent: #2563eb;
+  --accent-soft: rgba(37, 99, 235, 0.12);
+  --warn: #b45309;
+  --ok: #15803d;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #1f2126;
+    --bg-soft: #26282e;
+    --line: #3a3d45;
+    --ink: #e6e8ec;
+    --ink-soft: #9aa1ad;
+    --accent: #6ea8fe;
+    --accent-soft: rgba(110, 168, 254, 0.16);
+    --warn: #f0b357;
+    --ok: #6ee7a8;
+  }
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  margin: 0;
+  height: 100%;
+}
+
+body {
+  display: flex;
+  flex-direction: column;
+  background: var(--bg);
+  color: var(--ink);
+  font:
+    12px/1.5 system-ui,
+    -apple-system,
+    Segoe UI,
+    sans-serif;
+}
+
+/* ── top bar ─────────────────────────────────────────────── */
+
+.bar {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 8px;
+  border-bottom: 1px solid var(--line);
+  background: var(--bg-soft);
+  flex: 0 0 auto;
+}
+
+.bar button {
+  font: inherit;
+  padding: 3px 10px;
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  background: var(--bg);
+  color: var(--ink);
+  cursor: pointer;
+}
+
+.bar button:hover:not(:disabled) {
+  border-color: var(--accent);
+}
+
+.bar button:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+.bar button.active {
+  background: var(--accent-soft);
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+.status {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  overflow: hidden;
+}
+
+.status .dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--ink-soft);
+  flex: 0 0 auto;
+}
+
+.status[data-state='connected'] .dot {
+  background: var(--ok);
+}
+
+.status[data-state='no-surface'] .dot,
+.status[data-state='no-peer'] .dot {
+  background: var(--warn);
+}
+
+.status .state {
+  white-space: nowrap;
+}
+
+.status .detail {
+  color: var(--ink-soft);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* ── breadcrumb ──────────────────────────────────────────── */
+
+.breadcrumb {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 4px 8px;
+  border-bottom: 1px solid var(--line);
+  overflow-x: auto;
+  white-space: nowrap;
+  flex: 0 0 auto;
+  min-height: 26px;
+}
+
+.crumb {
+  font:
+    11px/1.4 ui-monospace,
+    SFMono-Regular,
+    Menlo,
+    Consolas,
+    monospace;
+  border: 0;
+  background: none;
+  color: var(--accent);
+  cursor: pointer;
+  padding: 1px 3px;
+  border-radius: 3px;
+}
+
+.crumb:hover {
+  background: var(--accent-soft);
+}
+
+.crumb-sep {
+  color: var(--ink-soft);
+}
+
+/* ── split ───────────────────────────────────────────────── */
+
+.split {
+  display: flex;
+  flex: 1 1 auto;
+  min-height: 0;
+}
+
+.pane {
+  overflow: auto;
+  min-width: 0;
+}
+
+.tree {
+  flex: 1 1 55%;
+  border-right: 1px solid var(--line);
+}
+
+.card {
+  flex: 1 1 45%;
+  padding: 8px 10px;
+}
+
+/* ── tree rows ───────────────────────────────────────────── */
+
+.row {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  padding: 2px 8px 2px 0;
+  cursor: default;
+  white-space: nowrap;
+}
+
+.row:hover {
+  background: var(--bg-soft);
+}
+
+.row.selected {
+  background: var(--accent-soft);
+}
+
+.twisty {
+  width: 10px;
+  color: var(--ink-soft);
+  cursor: pointer;
+  flex: 0 0 auto;
+}
+
+.kind {
+  font-weight: 600;
+}
+
+.id,
+.expression,
+.card-id {
+  font:
+    11px/1.4 ui-monospace,
+    SFMono-Regular,
+    Menlo,
+    Consolas,
+    monospace;
+  color: var(--ink-soft);
+}
+
+.badge {
+  font-size: 10px;
+  padding: 0 5px;
+  border-radius: 8px;
+  background: var(--accent-soft);
+  color: var(--accent);
+}
+
+.tree-footer {
+  padding: 6px 10px;
+  color: var(--ink-soft);
+  border-top: 1px solid var(--line);
+}
+
+/* ── node card ───────────────────────────────────────────── */
+
+.card-head {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  padding-bottom: 6px;
+  border-bottom: 1px solid var(--line);
+  margin-bottom: 8px;
+}
+
+.card-kind {
+  font-size: 14px;
+  font-weight: 600;
+}
+
+.kv {
+  display: flex;
+  gap: 8px;
+  padding: 1px 0;
+}
+
+.kv .k {
+  color: var(--ink-soft);
+  min-width: 88px;
+}
+
+.section {
+  margin-top: 12px;
+}
+
+.section-title {
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--ink-soft);
+  margin: 0 0 4px;
+}
+
+.binding {
+  display: grid;
+  grid-template-columns: minmax(70px, auto) minmax(56px, auto) 1fr;
+  gap: 2px 8px;
+  padding: 4px 0;
+  border-top: 1px solid var(--line);
+}
+
+.binding .slot {
+  font-weight: 600;
+}
+
+.binding .source {
+  color: var(--ink-soft);
+}
+
+.binding .expression {
+  grid-column: 3;
+  overflow-wrap: anywhere;
+}
+
+.binding .value {
+  grid-column: 1 / -1;
+  overflow-wrap: anywhere;
+}
+
+.muted {
+  color: var(--ink-soft);
+}
+
+/* ── empty states ────────────────────────────────────────── */
+
+.empty {
+  padding: 16px 12px;
+  max-width: 46ch;
+}
+
+.empty-title {
+  margin: 0 0 6px;
+  font-weight: 600;
+}
+
+.empty-line {
+  margin: 0 0 4px;
+  color: var(--ink-soft);
+}

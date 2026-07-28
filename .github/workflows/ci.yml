@@ -1,0 +1,56 @@
+name: CI
+
+# The relay conformance leg reads the shared specification corpus, so the spec
+# repository is checked out as a sibling at ../wire-format-fixtures — the same
+# path every conformant host in the family resolves it at, and the same path
+# `run.ps1` expects locally.
+#
+# The corpus is deliberately UNPINNED. It is the shared gate every host
+# certifies against, and the point of giving it one home is that all hosts see
+# the same current specification; pinning it would reintroduce the drift that
+# single home exists to remove.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: fuaran-devtools
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          path: fuaran-devtools
+
+      - uses: actions/checkout@v4
+        with:
+          repository: fuaran-ui/fuaran-ui-specification
+          path: wire-format-fixtures
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 9
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Install
+        run: pnpm install --no-frozen-lockfile
+
+      - name: Format check
+        run: pnpm format:check
+
+      - name: Typecheck
+        run: pnpm typecheck
+
+      - name: Test
+        run: pnpm test
+
+      - name: Build
+        run: pnpm build

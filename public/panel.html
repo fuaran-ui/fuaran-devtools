@@ -1,0 +1,21 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>Fuaran</title>
+    <link rel="stylesheet" href="panel.css" />
+  </head>
+  <body>
+    <header class="bar">
+      <button id="pick" type="button" disabled>Select</button>
+      <button id="refresh" type="button">Refresh</button>
+      <div id="status" class="status"></div>
+    </header>
+    <nav id="breadcrumb" class="breadcrumb" aria-label="Selected node path"></nav>
+    <main class="split">
+      <section id="tree" class="pane tree" aria-label="Typed node tree"></section>
+      <section id="card" class="pane card" aria-label="Node detail"></section>
+    </main>
+    <script src="panel.js"></script>
+  </body>
+</html>
