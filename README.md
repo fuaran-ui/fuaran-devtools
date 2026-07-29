@@ -23,6 +23,11 @@ palette are **derived from the canonical wire schema**, so a kind added to the v
 with no change to this extension — and a kind this build has never heard of degrades to read-only
 rows with the reason on screen, rather than to an empty panel.
 
+And it **records what it changed**. Every op the page confirms is kept in an attributed,
+hash-chained trail you can undo, redo, and export as a JSON document. The chain is the wire format's
+own op-stream chain, so re-ordering the trail or re-labelling who made an edit moves every hash from
+that point on — the attribution is evidence rather than a claim.
+
 ## Status
 
 Early. The extension is not yet published to any browser store — load it unpacked (below).
@@ -68,6 +73,7 @@ wire format. Four pieces:
 | `src/panel/`        | the DevTools panel page    | tree view, breadcrumb, node card, property editor, structural palette                    |
 | `src/schema/`       | (pure)                     | derive per-kind fields and minimal-valid candidates from the wire schema                 |
 | `src/edit/`         | (pure)                     | compose the tree-ops the panel proposes                                                  |
+| `src/trail/`        | (pure)                     | record applied ops, hash-chain them, derive an undo, write the export document           |
 
 Only the page peer needs the page's JS world, because a page global is invisible from a content
 script. Everything else — the overlay, the picker, the relay client — is ordinary DOM work in the
@@ -92,6 +98,90 @@ A host tier may install its own relay peer. Both peers would then answer the sam
 wasteful on the read side, but on the write side a single edit would be **applied twice**. So the
 injected peer yields: it watches the traffic it already receives and stands down permanently as soon
 as another peer's reply proves one is there.
+
+## The recording
+
+Every op the page confirms is appended to a trail, attributed to `devtools` and chained to the op
+before it with the wire format's own op-stream chain hash. A **refused** op is not in the trail: the
+contract guarantees a refusal left the tree unchanged, so recording one would state that it did
+something.
+
+### Undo is a compensating op, not a local rewind
+
+The panel contributes no apply engine — that absence is a stated property, not an omission — so an
+undo is composed as an ordinary tree-op and sent through the page's own gated apply path. The host
+applies it, the host may refuse it, and the record moves only once the host has confirmed.
+
+Which means some edits genuinely cannot be undone here, and the panel says which rather than
+offering an undo that turns out to be a lie:
+
+| Edit            | Undoable                                                                                                                                                                                                                              |
+| --------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| a property edit | only once this session knows what was there — an earlier edit to the same field, or the value a node was inserted with. This profile cannot read a property value, so the state before your first edit to a field was never knowable. |
+| an insert       | yes — the panel minted the child, so it knows what to remove                                                                                                                                                                          |
+| a removal       | **no** — the subtree was never readable as wire JSON, and re-inserting a husk would put back something the page never had                                                                                                             |
+| a move          | yes — the recorded snapshot names the old parent and the old sibling order                                                                                                                                                            |
+| a reorder       | yes — the recorded snapshot names the old order                                                                                                                                                                                       |
+
+History is linear. Undoing then editing discards what was undone, exactly as an op log does.
+
+### When something else is driving the same page
+
+If a change arrives that this panel did not cause, undo **stops there**. Ops recorded before it were
+composed against a tree that no longer exists, and reverting them could undo work this session did
+not do. Anything you do after the interruption is fully undoable again, because it was composed
+against the page as it is now. Whatever had been undone can no longer be redone, for the sharper
+version of the same reason: replaying an op composed before someone else's change is how an edit
+lands somewhere nobody chose, successfully.
+
+### Session boundary
+
+A recording starts at the first tree the panel reads on the page, and ends when the page does — a
+navigation, a reload, or the tab closing. **Nothing is persisted**, so an un-exported recording is
+gone. That is a deliberate trade: persisting it needs a storage permission, and this extension's
+manifest requests none at all. The panel says so beside the Export button.
+
+### What the exported document is, and what it is not
+
+The export is byte-shaped after the **session op log** the Fuaran playground writes — the same field
+names, the same order, the same canonical encoding of every embedded document, the same chain. It
+carries a different marker, `fuaran-devtools-op-trail`, and the reason is worth being exact about.
+
+A session op log's central claim is that **its ops build its tree**: it carries a base tree, the ops,
+and the final tree, and a reader checks the claim by replaying them. This extension can honour every
+part of that except the two trees, because `relay@1.0` has no read that returns a node's canonical
+wire JSON. Its reads answer what the tree is structurally; none returns the wire form of a node, and
+`treeRevision` is specified as an opaque token a client must not parse. Without a base tree there is
+also no base hash, so the chain is seeded at the genesis hash instead.
+
+So the document says so, in the document:
+
+```json
+{
+  "$log": "fuaran-devtools-op-trail",
+  "version": 1,
+  "baseHash": "0000…0000",
+  "base": null,
+  "ops": [{ "seq": 1, "actor": { "kind": "human", "id": "devtools" }, "prevHash": "…", "hash": "…", "op": { … } }],
+  "tree": null,
+  "integrity": { "base": "absent", "tree": "absent", "chainSeed": "genesis", "reason": "…" },
+  "session": { "host": "…", "profile": "relay@1.0", "startedAt": "…", "startRevision": "…", … },
+  "structure": { "shape": "…", "base": { … }, "final": { … } }
+}
+```
+
+Emitting the session log's own marker with two nulls inside would have been easier and worse: it puts
+a document into circulation whose name promises replayability, and leaves a reader to discover the
+absence from whichever gate happens to trip first. With its own marker, a pipeline expecting the
+session log rejects it on the envelope check — immediately, and before anything downstream has
+assumed the trees are there.
+
+Everything else is deliberately identical, so the day this contract gains a wire-JSON read the change
+is: capture the two trees, seed the chain at the base hash, change the marker, drop the appendix. The
+three additions sit **after** `tree` precisely so the shared prefix diffs cleanly against a real
+session log. `structure` is the honest substitute for the two trees: the relay's own structural
+snapshots, in a shape nobody can mistake for wire JSON, since its `kind` is a discriminator name and
+its nodes carry no properties at all.
 
 ## Security posture
 
@@ -160,6 +250,18 @@ what the peer put on the wire. Nothing asks for an event, so a request-driven ru
 — and without this leg the peer could advertise a subscription, answer it, and emit nothing at all
 while every other fixture still passed.
 
+The same checkout carries the **cross-host op-stream chain corpus** — golden records generated by the
+canonical implementation, which the reference hosts already assert against. The recording's chain
+hash is asserted against it too, which is what makes this a third implementation of the pinned
+pre-image rather than a plausible-looking one. It matters more here than most conformance: a chain
+hash that is subtly wrong still produces a document full of hex that chains to itself perfectly, and
+nothing about it looks wrong until someone else tries to verify it.
+
+The canonical encoder is checked the same way, against the corpus's own bytes. Every canonical
+fixture is stored canonically, so parsing one and re-encoding it must return the identical bytes —
+asserted over the whole `ops/` and `nodes/` families, enumerated from the directory rather than from
+a list in this repo, so a fixture added upstream is covered without anyone remembering to add it.
+
 Beside the corpus, two suites carry the write side:
 
 - **op shapes**, asserted on bytes — an op is not environment-specific, and a renamed field or a
@@ -169,6 +271,10 @@ Beside the corpus, two suites carry the write side:
 - **end to end**, client → peer → host, against a host holding a real mutable tree: an edit
   round-trips, an insert lands where it was placed, a refused edit leaves the tree byte-identical,
   and a concurrent writer's mutation keeps the panel coherent.
+- **the recording**, on the same wiring: an undone edit leaves that host's tree byte-identical
+  (property values and all — which is the strongest available reading of "byte-identical" when the
+  relay returns no canonical tree), a refused op never enters the trail, and the exported document's
+  chain survives being re-derived from the parsed document rather than from what the writer stored.
 
 ### What the suite does not cover
 
@@ -178,7 +284,10 @@ the mock. Verify it by loading the unpacked extension and, on a page whose host 
 edit a text field and a numeric field and watch the page re-render; insert a node before a sibling
 and confirm the order; attempt an illegal edit and read the refusal class; and mutate the tree from
 the browser console (`__fuaran.apply(…)`) while the panel is open, confirming the panel follows
-without losing its selection.
+without losing its selection. Then, for the recording: edit the same field twice and press Undo,
+confirming the page returns to the first value; press Export and open the file; mutate the tree from
+the console and confirm Undo goes unavailable with the reason on screen; and reload, confirming the
+recording is gone.
 
 ## What the panel cannot know
 
@@ -198,9 +307,13 @@ around locally:
 - **Style is not editable here.** The style op replaces a node's whole style block, and with no read
   of the current one, committing a single token would silently discard the rest. An edit that
   destroys what it cannot see is not worth offering.
+- **A recording is not replayable.** The same missing read means no base tree and no final tree, so
+  the export is a provenance record rather than a session that can be replayed — and some undos are
+  unavailable for exactly the same reason. See [The recording](#the-recording).
 
-A profile that served a node's own wire JSON would close the first and third of these, and make the
-second unnecessary. That is a change to the contract, not to this extension, and belongs upstream.
+A profile that served a node's own wire JSON would close the first, third and fourth of these, and
+make the second unnecessary. That is a change to the contract, not to this extension, and belongs
+upstream.
 
 ## Dependencies
 
@@ -208,6 +321,16 @@ None at runtime. The relay contract is a specification document, not a package: 
 implementation is written from the document and needs no host's source. The same reasoning covers
 the write side — the op shapes are specified and fixture-pinned, and the contract puts canonical
 serialisation on the page peer, so the client sends a structured object and needs no codec.
+
+The recording was the one place that argument had to be re-examined rather than repeated, because
+its chain hashes the **canonical bytes** of each op, and getting those wrong is not a slightly-wrong
+document but an unverifiable one. The published op-stream package was checked and not adopted: its
+hash function takes a typed tree-op and calls the typed encoder, so consuming it means taking the
+codec packages too and decoding this panel's structured ops into their types purely to re-encode
+them — pinning the op vocabulary to one implementation's release cadence, which is the coupling this
+extension exists without. What remained was a canonicaliser over JSON and a four-line pre-image, with
+the browser supplying the SHA-256 and the shared corpus supplying the proof. Dependency-free happened
+to be both cheaper and better here; that is not always true, which is why it was checked.
 
 The extension deliberately takes no dependency on a Fuaran package either. It attaches to whatever
 host is on the page, which may be a different tier at a different version; pinning its vocabulary to

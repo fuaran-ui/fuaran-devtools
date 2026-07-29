@@ -163,6 +163,49 @@ body {
   color: var(--ink-soft);
 }
 
+/* ── recording strip ─────────────────────────────────────── */
+
+/* Session-level, so it sits across the panel rather than inside the selected
+   node's card: a recording spans the page, not a node. It wraps rather than
+   truncates — the reasons it carries (why an undo is unavailable, what the
+   export does not contain) are the whole point of the surface, and a clipped
+   reason is a reason nobody reads. */
+
+.history-bar {
+  flex: 0 0 auto;
+  border-bottom: 1px solid var(--line);
+  background: var(--bg-soft);
+}
+
+.history {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  padding: 5px 8px;
+}
+
+.history-count {
+  color: var(--ink-soft);
+  font-variant-numeric: tabular-nums;
+  min-width: 8em;
+}
+
+.history-last {
+  color: var(--ink-soft);
+  font-style: italic;
+}
+
+.history-why {
+  flex: 1 1 100%;
+  color: var(--warn);
+  line-height: 1.45;
+}
+
+.history .muted {
+  margin: 0;
+}
+
 /* ── split ───────────────────────────────────────────────── */
 
 .split {

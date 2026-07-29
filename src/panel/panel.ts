@@ -30,6 +30,9 @@ import {
 import { definition, el } from './dom.js';
 import { renderPropertyEditor, renderStructural, type EditContext } from './editSurface.js';
 import { loadWireSchema, WIRE_SCHEMA_FILE, type DerivedSchema } from './schemaSource.js';
+import { downloadDocument, renderHistory } from './history.js';
+import { Trail } from '../trail/recorder.js';
+import { TRAIL_FILENAME } from '../trail/sessionLog.js';
 
 const connection = new PanelConnection(chrome.devtools.inspectedWindow.tabId);
 
@@ -43,6 +46,7 @@ const statusBar = byId('status');
 const treePane = byId('tree');
 const crumbBar = byId('breadcrumb');
 const cardPane = byId('card');
+const historyBar = byId('history');
 const refreshButton = byId('refresh') as HTMLButtonElement;
 const pickButton = byId('pick') as HTMLButtonElement;
 
@@ -67,6 +71,13 @@ let derived: DerivedSchema | undefined;
 /** The last revision the page reported, so a `changed` echo is not re-read twice. */
 let lastRevision: string | undefined;
 const collapsed = new Set<string>();
+/**
+ * The attributed record of what this session has applied to this page.
+ *
+ * One per panel, reset on navigation: a trail carried across a navigation would
+ * address node ids belonging to a different tree.
+ */
+const trail = new Trail();
 
 // ─── Status ─────────────────────────────────────────────────────────
 
@@ -253,6 +264,21 @@ const renderCard = (node: NodeSnapshot): void => {
  * held node — is read from here at the moment they are built, which is what
  * keeps them consistent with a tree that may have just been re-read.
  */
+/**
+ * Propose one op to the page. The single route to the relay's apply, so the
+ * revision bookkeeping — and therefore the "was that change ours?" test the
+ * trail's external-change posture rests on — has exactly one home.
+ */
+const applyThroughRelay = async (op: TreeOpJson, reason: string): Promise<ApplyResult> => {
+  const result = await connection.request<ApplyResult>('apply', { op, reason });
+  // The post-op revision is recorded here so the `changed` event this very
+  // edit causes is recognised as its own echo. Otherwise every edit re-reads
+  // the tree twice: once because the panel knows it changed it, and again
+  // when the page says so.
+  if (result.ok) lastRevision = result.treeRevision;
+  return result;
+};
+
 const editContext = (node: NodeSnapshot): EditContext => ({
   capabilities,
   derived,
@@ -260,12 +286,10 @@ const editContext = (node: NodeSnapshot): EditContext => ({
   node,
   held,
   commit: async (op: TreeOpJson, reason: string) => {
-    const result = await connection.request<ApplyResult>('apply', { op, reason });
-    // The post-op revision is recorded here so the `changed` event this very
-    // edit causes is recognised as its own echo. Otherwise every edit re-reads
-    // the tree twice: once because the panel knows it changed it, and again
-    // when the page says so.
-    if (result.ok) lastRevision = result.treeRevision;
+    const result = await applyThroughRelay(op, reason);
+    // Recorded only on a CONFIRMED apply. A refused op left the tree unchanged
+    // (§8.3), so putting it in the trail would state that it did something.
+    if (result.ok) await trail.record(op, reason, result.treeRevision);
     return result;
   },
   reload: () => void refresh(),
@@ -274,6 +298,66 @@ const editContext = (node: NodeSnapshot): EditContext => ({
     if (selected !== undefined) void select(selected);
   },
 });
+
+// ─── Recording ──────────────────────────────────────────────────────
+
+const renderHistoryBar = (): void => {
+  historyBar.replaceChildren(
+    renderHistory({
+      view: trail.view(),
+      canApply: capabilities.includes('apply'),
+      undo: () => void undoLast(),
+      redo: () => void redoNext(),
+      exportTrail: () => downloadDocument(TRAIL_FILENAME, trail.exportDocument()),
+      reset: () => {
+        trail.reset();
+        if (tree !== undefined) trail.observeTree(tree, lastRevision);
+        renderHistoryBar();
+      },
+    }),
+  );
+};
+
+/**
+ * Undo by COMPENSATING OP through the page's own apply path.
+ *
+ * The cursor moves only after the host confirms it. A refusal leaves the record
+ * exactly as it was and reports where the action was, because an undo the page
+ * declined is not an undo.
+ */
+const undoLast = async (): Promise<void> => {
+  const inverse = trail.undoOp();
+  if (inverse === undefined || !inverse.ok) {
+    renderHistoryBar();
+    return;
+  }
+  const result = await applyThroughRelay(inverse.op, 'undo');
+  if (result.ok) {
+    trail.confirmUndo(result.treeRevision);
+    await refresh();
+    return;
+  }
+  historyBar.appendChild(
+    el('span', 'history-why', `Undo refused — ${result.class}: ${result.message}`),
+  );
+};
+
+const redoNext = async (): Promise<void> => {
+  const op = trail.redoOp();
+  if (op === undefined) {
+    renderHistoryBar();
+    return;
+  }
+  const result = await applyThroughRelay(op, 'redo');
+  if (result.ok) {
+    trail.confirmRedo(result.treeRevision);
+    await refresh();
+    return;
+  }
+  historyBar.appendChild(
+    el('span', 'history-why', `Redo refused — ${result.class}: ${result.message}`),
+  );
+};
 
 const fillBindingValues = async (node: NodeSnapshot): Promise<void> => {
   if (!capabilities.includes('read.bindingValue')) {
@@ -368,6 +452,12 @@ const refresh = async (): Promise<void> => {
     renderStatus(status);
     capabilities = status.capabilities ?? [];
     pickButton.disabled = status.state !== 'connected';
+    trail.noteIdentity({
+      host: status.host ?? '',
+      hostVersion: status.hostVersion ?? '',
+      profile: status.profile ?? '',
+    });
+    renderHistoryBar();
 
     if (status.state !== 'connected') {
       tree = undefined;
@@ -409,7 +499,13 @@ const refresh = async (): Promise<void> => {
       await connection.request('watch').catch(() => undefined);
 
     tree = await connection.request<TreeSnapshot>('readTree');
+    // The FIRST tree observed becomes the recording's base — the session began
+    // when the panel could first see the page. Every later one is what the next
+    // op will be composed against, and what the export records as the final
+    // structure.
+    trail.observeTree(tree, status.treeRevision ?? lastRevision);
     renderTree();
+    renderHistoryBar();
 
     if (selected !== undefined && findNode(tree, selected) !== undefined) {
       await select(selected);
@@ -469,6 +565,11 @@ connection.onEvent((event) => {
     // never parsed: an event repeating a revision already seen (both peers on
     // a page emit one) costs nothing rather than a second full re-read.
     if (event.treeRevision !== undefined && event.treeRevision === lastRevision) return;
+    // Past the echo test, so this change was NOT caused by this panel. The
+    // trail sets its undo barrier here and drops the redo tail: undoing across
+    // someone else's edit would revert work this session did not do, and
+    // redoing an op composed before it would land it somewhere nobody chose.
+    trail.externalChange(event.treeRevision);
     if (event.treeRevision !== undefined) lastRevision = event.treeRevision;
     void refresh();
   }
@@ -478,12 +579,18 @@ connection.onEvent((event) => {
 // rather than showing a tree that no longer exists. The selection PATH is
 // dropped too: ids are per-tree, and re-resolving one against a different app's
 // tree could land on an unrelated node that happens to share an id.
+// The recording ends with the page. Node ids are per-tree, so a trail carried
+// across a navigation would hold ops addressing nodes that no longer mean what
+// they meant — and nothing is persisted, so an un-exported recording is gone.
+// The panel says so beside the Export button rather than only here.
 chrome.devtools.network.onNavigated.addListener(() => {
   tree = undefined;
   selected = undefined;
   selectedPath = [];
   held = undefined;
   lastRevision = undefined;
+  trail.reset();
+  renderHistoryBar();
   void refresh();
 });
 

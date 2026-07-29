@@ -12,13 +12,81 @@
 //  means nothing.
 // ============================================================================
 
-import { readFileSync, existsSync } from 'node:fs';
+import { readdirSync, readFileSync, existsSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const here = dirname(fileURLToPath(import.meta.url));
 
-export const CORPUS_DIR = resolve(here, '../../../wire-format-fixtures/devtools-relay');
+/** The specification checkout itself — the relay corpus is one family in it. */
+export const SPEC_DIR = resolve(here, '../../../wire-format-fixtures');
+
+export const CORPUS_DIR = join(SPEC_DIR, 'devtools-relay');
+
+const CLONE_HINT =
+  'Clone the specification repository as a sibling of this repo:\n' +
+  '  git clone https://github.com/fuaran-ui/fuaran-ui-specification ../wire-format-fixtures';
+
+/**
+ * A specification file's BYTES, unparsed.
+ *
+ * The canonical fixtures are stored in canonical byte form, so the encoder here
+ * has a fixed-point property that can only be checked against the bytes — parse
+ * them and the property being tested is gone.
+ */
+export const readSpecText = (relative: string): string => {
+  const path = join(SPEC_DIR, relative);
+  if (!existsSync(path)) throw new Error(`Missing specification file ${path}.\n${CLONE_HINT}`);
+  // The trailing newline is a file convention, not part of the canonical bytes.
+  return readFileSync(path, 'utf8').replace(/\s+$/, '');
+};
+
+export const readSpecJson = <T>(relative: string): T => JSON.parse(readSpecText(relative)) as T;
+
+/**
+ * Every canonical fixture in a specification family, by path.
+ *
+ * Enumerated from the DIRECTORY rather than from a list written here, so a
+ * fixture added upstream is covered without anyone remembering to add it — the
+ * conformance claim is about the format, not about the fixtures this repo
+ * happened to know about when it was written.
+ */
+export const listSpecFixtures = (family: string): readonly string[] => {
+  const path = join(SPEC_DIR, family);
+  if (!existsSync(path)) throw new Error(`Missing specification family ${path}.\n${CLONE_HINT}`);
+  return readdirSync(path)
+    .filter((name) => name.endsWith('.json'))
+    .sort()
+    .map((name) => `${family}/${name}`);
+};
+
+/** One golden record of the cross-host op-stream chain corpus. */
+export interface ChainRecord {
+  readonly opFixture: string;
+  readonly sequence: number;
+  readonly actor:
+    | { readonly kind: 'human'; readonly id: string }
+    | {
+        readonly kind: 'agent';
+        readonly model: string;
+        readonly version: string;
+        readonly id: string;
+      };
+  readonly promptId: string | null;
+  readonly result: { readonly kind: string; readonly code?: string; readonly message?: string };
+  readonly timestampUnixSeconds: number;
+  readonly previousHash: string;
+  readonly hash: string;
+}
+
+export interface ChainCorpus {
+  readonly version: number;
+  readonly genesisPreviousHash: string;
+  readonly records: readonly ChainRecord[];
+}
+
+export const readChainCorpus = (): ChainCorpus =>
+  readSpecJson<ChainCorpus>('chain/chain-corpus.json');
 
 export interface CorpusFixture {
   readonly id: string;
