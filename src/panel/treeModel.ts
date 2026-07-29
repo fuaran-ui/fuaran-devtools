@@ -87,3 +87,56 @@ export const ancestorIds = (tree: TreeSnapshot, id: string): readonly string[] =
 /** Total node count — the panel's one summary statistic. */
 export const countNodes = (tree: TreeSnapshot): number =>
   1 + tree.children.reduce((total, child) => total + countNodes(child), 0);
+
+/** The root→node id path, or `undefined` when the id is not in the tree. */
+export const pathTo = (tree: TreeSnapshot, id: string): readonly string[] | undefined => {
+  const path = breadcrumb(tree, id);
+  return path.length === 0 ? undefined : path.map((node) => node.id);
+};
+
+/** Every id in the tree — what a minted id must not collide with. */
+export const allNodeIds = (tree: TreeSnapshot): ReadonlySet<string> => {
+  const ids = new Set<string>();
+  const walk = (node: TreeSnapshot): void => {
+    ids.add(node.id);
+    for (const child of node.children) walk(child);
+  };
+  walk(tree);
+  return ids;
+};
+
+/** The node holding `id` as a child, or `undefined` for the root / a missing id. */
+export const parentOf = (tree: TreeSnapshot, id: string): TreeSnapshot | undefined => {
+  const path = breadcrumb(tree, id);
+  return path.length < 2 ? undefined : path[path.length - 2];
+};
+
+/** A node's sibling ids in order — the list a `ReorderChildren` must name. */
+export const siblingIds = (tree: TreeSnapshot, id: string): readonly string[] => {
+  const parent = parentOf(tree, id);
+  return parent === undefined ? [] : parent.children.map((child) => child.id);
+};
+
+/**
+ * Re-resolve a stored selection against a tree that may have changed underneath
+ * it — the panel's whole answer to "an AI is driving this page while I work".
+ *
+ * The rule: the DEEPEST id on the stored path that still exists anywhere in the
+ * new tree wins; if nothing on the path survives, the root does. Total by
+ * construction, so the selection always addresses a live node.
+ *
+ * Note what is NOT stored: no index, no ordinal, no captured snapshot. A
+ * selection remembered as "the third child of the second box" is wrong the
+ * moment anything is inserted above it, and wrong SILENTLY — it still resolves,
+ * just to the wrong node, and the next edit lands there. A path of ids either
+ * resolves to what was selected or is honestly gone.
+ */
+export const reresolve = (tree: TreeSnapshot, storedPath: readonly string[]): readonly string[] => {
+  for (let index = storedPath.length - 1; index >= 0; index -= 1) {
+    const id = storedPath[index];
+    if (id === undefined) continue;
+    const found = pathTo(tree, id);
+    if (found !== undefined) return found;
+  }
+  return [tree.id];
+};

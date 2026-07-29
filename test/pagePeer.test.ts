@@ -9,7 +9,7 @@ import {
   type HostSurface,
 } from '../src/relay/pagePeer.js';
 import { request } from '../src/relay/protocol.js';
-import { bareHost, taggedHost } from './support/fakeHost.js';
+import { applyHost, bareHost, taggedHost, unwiredApplyHost } from './support/fakeHost.js';
 
 const IDENTITY = { host: 'fuaran-devtools-page-relay', hostVersion: '0.1.0' };
 // NOT a default parameter: `peer(undefined)` would then silently mean
@@ -79,7 +79,7 @@ describe('tree revision (§5.4)', () => {
 });
 
 describe('capability advertisement (§6.3, §6.4)', () => {
-  it('advertises only what the surface offers, and never a mutation', () => {
+  it('advertises only what the surface offers', () => {
     expect(capabilitiesOf(bareHost)).toEqual([
       'read.nodeState',
       'read.bindingValue',
@@ -89,6 +89,26 @@ describe('capability advertisement (§6.3, §6.4)', () => {
     ]);
     expect(capabilitiesOf({ inspectTree: () => ({}) })).toEqual(['read.tree']);
     expect(capabilitiesOf({})).toEqual([]);
+  });
+
+  it('advertises the write side only when the host wired it', () => {
+    expect(capabilitiesOf(applyHost)).toContain('apply');
+    expect(capabilitiesOf(applyHost)).toContain('subscribe');
+  });
+
+  it('does NOT advertise apply for a surface that exposes an inert one', () => {
+    // `canApply` is read as the host's CLAIM, not as a hint from the method's
+    // presence. Inferring it would make the panel offer edit affordances that
+    // every op then bounces off, and §6.4 asks a peer not to guess.
+    expect(capabilitiesOf(unwiredApplyHost)).not.toContain('apply');
+  });
+
+  it('refuses an apply against an inert path as absent, not as illegal', () => {
+    // Reachable only if a host mis-declares itself. Reporting it as a validator
+    // rejection would tell the user their perfectly legal op was illegal.
+    const inert = createPagePeer({ ...unwiredApplyHost, canApply: true }, IDENTITY);
+    const denied = inert.handle(request('c-1', 'apply', { op: { $type: 'RemoveNode' } }));
+    expect(denied?.payload['class']).toBe('CAPABILITY_ABSENT');
   });
 
   it('refuses an un-advertised read with CAPABILITY_ABSENT, not UNKNOWN_MESSAGE', () => {

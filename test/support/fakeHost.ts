@@ -99,6 +99,94 @@ export const bareHost: HostSurface = {
   },
 };
 
+/**
+ * A host that additionally wired an apply path and a change hub.
+ *
+ * Its `apply` returns the ENVELOPE SHAPE the real host tiers return — a status
+ * token plus tier-specific extras — rather than anything relay-shaped, so
+ * driving the corpus's apply fixtures through the peer exercises the §8.3
+ * mapping (envelope status → refusal class) rather than a pass-through. The
+ * per-op outcomes are chosen to match what the corpus's own apply fixtures
+ * declare, so one fake covers the accepted case and all three refusal classes.
+ */
+const applyEnvelope = (op: unknown): unknown => {
+  const json = op as Record<string, unknown>;
+  const type = json['$type'];
+  const target = json['target'];
+
+  if (type === 'RemoveNode' && target === 'root')
+    return {
+      ok: false,
+      status: 'rejected',
+      error: 'The op decoded but the apply engine rejected it.',
+      code: 'FUARAN-APPLY-ROOT-REMOVAL',
+    };
+  if (type === 'RemoveNode')
+    return { ok: false, status: 'denied', denied: true, error: 'Denied by the policy gate.' };
+  if (
+    type !== 'UpdateProp' &&
+    type !== 'InsertChild' &&
+    type !== 'ReorderChildren' &&
+    type !== 'MoveNode' &&
+    type !== 'Batch'
+  )
+    return {
+      ok: false,
+      status: 'decodeFailed',
+      error: `Unknown TreeOp case '${String(type)}'.`,
+      decodeError: {
+        Code: 'UNKNOWN_DU_CASE',
+        Path: '$.$type',
+        Message: `Unknown TreeOp case '${String(type)}'.`,
+        ExpectedShape: 'UpdateProp | InsertChild | RemoveNode | MoveNode | ReorderChildren | Batch',
+      },
+    };
+  return { ok: true, status: 'applied', treeRevision: 'r-42' };
+};
+
+/** Drives the change listeners a `subscribe` established, as a host would. */
+export interface ChangeDriver {
+  emit(treeRevision: string, cause: string): void;
+  readonly listenerCount: () => number;
+}
+
+export const applyHostWith = (): { host: HostSurface; driver: ChangeDriver } => {
+  const listeners = new Set<(change: unknown) => void>();
+  const host: HostSurface = {
+    ...bareHost,
+    canApply: true,
+    treeRevision: () => 'r-41',
+    apply: applyEnvelope,
+    subscribe: (listener) => {
+      listeners.add(listener);
+      return () => listeners.delete(listener);
+    },
+  };
+  return {
+    host,
+    driver: {
+      emit: (treeRevision, cause) => {
+        for (const listener of listeners) listener({ treeRevision, cause });
+      },
+      listenerCount: () => listeners.size,
+    },
+  };
+};
+
+export const applyHost: HostSurface = applyHostWith().host;
+
+/**
+ * A host that exposes `apply` but never wired one — the shape a read-only
+ * build of an otherwise apply-capable tier presents. The capability must NOT
+ * be advertised for it, which is the whole reason `canApply` is read as a
+ * claim rather than inferred from the method's presence.
+ */
+export const unwiredApplyHost: HostSurface = {
+  ...bareHost,
+  canApply: false,
+  apply: () => ({ ok: false, status: 'unwired', error: 'apply is not wired on this host.' }),
+};
+
 export const taggedHost: HostSurface = {
   ...bareHost,
   getBindingValue: (nodeId, slot) => {

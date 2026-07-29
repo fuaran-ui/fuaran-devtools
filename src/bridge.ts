@@ -27,6 +27,10 @@ export type BridgeMethod =
   | 'readNodeState'
   | 'readBindingValue'
   | 'readRenderedDom'
+  /** Propose one tree-op through the page's own gated apply path. */
+  | 'apply'
+  /** Establish (idempotently) the tab's change subscription. */
+  | 'watch'
   | 'highlight'
   | 'unhighlight'
   | 'startPick'
@@ -56,12 +60,16 @@ export type BridgeResponse =
       readonly error: string;
     };
 
-/** Unsolicited content → panel notifications (a completed pick, a hover). */
+/** Unsolicited content → panel notifications (a completed pick, a tree change). */
 export interface BridgeEvent {
   readonly [BRIDGE_FIELD]: typeof BRIDGE_VERSION;
   readonly dir: 'event';
-  readonly event: 'picked' | 'pickHover' | 'pickCancelled';
+  readonly event: 'picked' | 'pickHover' | 'pickCancelled' | 'changed';
   readonly nodeId?: string;
+  /** `changed` only — the revision AFTER the change (opaque; compare, never parse). */
+  readonly treeRevision?: string;
+  /** `changed` only — `"apply"` or `"host"`; anything else is carried through. */
+  readonly cause?: string;
 }
 
 const isEnvelope = (value: unknown): value is Record<string, unknown> =>
@@ -113,6 +121,35 @@ export const bridgeEvent = (event: BridgeEvent['event'], nodeId?: string): Bridg
   nodeId === undefined
     ? { [BRIDGE_FIELD]: BRIDGE_VERSION, dir: 'event', event }
     : { [BRIDGE_FIELD]: BRIDGE_VERSION, dir: 'event', event, nodeId };
+
+export const bridgeChanged = (treeRevision: string, cause: string): BridgeEvent => ({
+  [BRIDGE_FIELD]: BRIDGE_VERSION,
+  dir: 'event',
+  event: 'changed',
+  treeRevision,
+  cause,
+});
+
+// ─── `apply` result ─────────────────────────────────────────────────
+
+/**
+ * The outcome of a proposed op, as the panel receives it.
+ *
+ * A refusal travels as a SUCCESSFUL bridge response carrying `ok: false`,
+ * never as a bridge error. The distinction matters: the bridge's error channel
+ * is a string, and collapsing a refusal into it would destroy the one field
+ * the contract insists a client branches on — the machine-readable class
+ * (§8.4). "The validator rejected this edit" and "the extension could not
+ * reach the tab" are not the same event and must not arrive the same way.
+ */
+export type ApplyResult =
+  | { readonly ok: true; readonly treeRevision: string }
+  | {
+      readonly ok: false;
+      readonly class: string;
+      readonly message: string;
+      readonly detail?: Readonly<Record<string, unknown>>;
+    };
 
 // ─── `status` result ────────────────────────────────────────────────
 

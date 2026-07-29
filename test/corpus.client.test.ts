@@ -161,6 +161,103 @@ describe('relay@1.0 corpus — client peer', () => {
       expect(result.failure.refusal.class).toBe(entry.expectedClass);
     });
 
+  // ── the write side ──
+
+  it('proposes an op and reads back the post-op revision', async () => {
+    const entry = fixture('apply-accepted');
+    let sent: RelayEnvelope | undefined;
+    const peer = client((envelope) => {
+      sent = envelope;
+      return readFixture(entry!.responseFile!);
+    });
+    const request = readFixture(entry!.requestFile!);
+    const payload = request['payload'] as Record<string, unknown>;
+
+    const result = await peer.apply(payload['op'] as Record<string, unknown>, {
+      actor: 'fuaran-devtools',
+      reason: 'renamed column from the inspector',
+    });
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.value.applied).toBe(true);
+    expect(result.value.treeRevision).not.toBe('');
+
+    // §8.2: the op crosses as an EMBEDDED JSON OBJECT, never a string. A client
+    // that pre-serialised would be doing the page peer's job, badly — canonical
+    // ordering is the format's, and the host is the one that implements it.
+    expect(typeof sent?.payload['op']).toBe('object');
+    expect(sent?.payload['attribution']).toEqual({
+      actor: 'fuaran-devtools',
+      reason: 'renamed column from the inspector',
+    });
+  });
+
+  it.each([
+    ['refusal-validator-reject', 'VALIDATOR_REJECT'],
+    ['refusal-policy-denied', 'POLICY_DENIED'],
+    ['refusal-decode-failed', 'DECODE_FAILED'],
+  ])('keeps the apply-path refusal classes distinct — %s', async (id, expected) => {
+    const peer = client(respondWith(fixture(id)!.responseFile!));
+    const result = await peer.apply({ $type: 'RemoveNode', target: 'metric-1' });
+    expect(result.ok).toBe(false);
+    if (result.ok || result.failure.kind !== 'refusal') return;
+    // §8.4: three classes, three different things for the user to do. A client
+    // that collapsed them would send someone to fix a tree that was fine.
+    expect(result.failure.refusal.class).toBe(expected);
+  });
+
+  it('refuses locally when apply was never advertised (§6.4)', async () => {
+    const peer = client(respondWith(fixture('hello-read-only')!.responseFile!));
+    await peer.hello();
+    const result = await peer.apply({ $type: 'RemoveNode', target: 'metric-1' });
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    // Never reaches the page: §6.4 forbids issuing a request for a capability
+    // that was not advertised, and refusing locally is what enforces it.
+    expect(result.failure.kind).toBe('capabilityAbsent');
+  });
+
+  it('establishes and releases a subscription', async () => {
+    const peer = client((envelope) =>
+      readFixture(
+        envelope.type === 'subscribe'
+          ? fixture('subscribe')!.responseFile!
+          : fixture('unsubscribe')!.responseFile!,
+      ),
+    );
+    const established = await peer.subscribe();
+    expect(established.ok).toBe(true);
+    if (!established.ok) return;
+    expect(established.value.events).toEqual(['tree']);
+
+    const released = await peer.unsubscribe(established.value.subscriptionId);
+    expect(released.ok).toBe(true);
+  });
+
+  it('routes every change event to its handlers, cause intact', async () => {
+    const seen: { revision: string; cause: string }[] = [];
+    const { peer, deliver } = harness(() => undefined);
+    peer.onChanged((change) => seen.push({ revision: change.treeRevision, cause: change.cause }));
+
+    for (const entry of manifest.fixtures.filter((f) => f.kind === 'relay-event'))
+      deliver(readFixture(entry.eventFile!) as unknown as RelayEnvelope);
+
+    expect(seen.map((change) => change.cause)).toEqual(['apply', 'host']);
+    // The revision is the client's staleness signal, so it must arrive intact.
+    expect(new Set(seen.map((change) => change.revision)).size).toBe(2);
+  });
+
+  it('stops delivering to a handler that unsubscribed', async () => {
+    const seen: string[] = [];
+    const { peer, deliver } = harness(() => undefined);
+    const stop = peer.onChanged((change) => seen.push(change.treeRevision));
+    const event = readFixture(fixture('changed-apply')!.eventFile!) as unknown as RelayEnvelope;
+    deliver(event);
+    stop();
+    deliver(event);
+    expect(seen).toHaveLength(1);
+  });
+
   it('tolerates a refusal class it has never heard of (§10.3)', async () => {
     const peer = client(() => ({
       $relay: 'relay@1.0',

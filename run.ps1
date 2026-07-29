@@ -15,7 +15,10 @@
 
         git clone https://github.com/fuaran-ui/fuaran-ui-specification ../wire-format-fixtures
 
-    A missing corpus fails the suite loudly rather than skipping it.
+    A missing corpus fails the suite loudly rather than skipping it. The same
+    checkout carries the canonical wire schema, which the build copies into
+    dist/ for the panel's property editor and insert palette to derive from —
+    a missing one degrades the build (no derived fields) rather than failing it.
 
 .PARAMETER SkipInstall
     Skip `pnpm install`. Use when node_modules is already in sync.
@@ -91,7 +94,7 @@ $corpus = Join-Path $PSScriptRoot '..' 'wire-format-fixtures' 'devtools-relay'
 if (-not (Test-Path $corpus)) {
     Write-Host ""
     Write-Host "The relay conformance corpus is not present at ../wire-format-fixtures." -ForegroundColor Yellow
-    Write-Host "The conformance leg of the test suite will fail. Clone it as a sibling:" -ForegroundColor Yellow
+    Write-Host "The conformance leg will fail and the build will ship no wire schema. Clone it as a sibling:" -ForegroundColor Yellow
     Write-Host "    git clone https://github.com/fuaran-ui/fuaran-ui-specification ../wire-format-fixtures" -ForegroundColor Yellow
     Write-Host ""
 }

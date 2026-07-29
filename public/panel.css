@@ -328,3 +328,99 @@ body {
   margin: 0 0 4px;
   color: var(--ink-soft);
 }
+
+/* ── edit surfaces ───────────────────────────────────────── */
+
+/* The write half reads as part of the same card, not as a mode: a developer
+   inspecting a node and a developer editing one are the same person a second
+   apart, and a separate "edit mode" would cost a click to learn nothing. */
+
+.field {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 3px 0;
+  flex-wrap: wrap;
+}
+
+.field-name {
+  min-width: 9ch;
+  font-weight: 600;
+}
+
+.field-input {
+  flex: 1 1 10ch;
+  min-width: 8ch;
+  padding: 2px 4px;
+  border: 1px solid var(--line);
+  border-radius: 3px;
+  background: var(--bg);
+  color: var(--ink);
+  font: inherit;
+}
+
+.field-input[type='checkbox'] {
+  flex: 0 0 auto;
+}
+
+.field-commit {
+  padding: 2px 8px;
+  border: 1px solid var(--line);
+  border-radius: 3px;
+  background: var(--bg-soft);
+  color: var(--ink);
+  font: inherit;
+  cursor: pointer;
+}
+
+.field-commit:hover {
+  border-color: var(--accent);
+}
+
+.field-commit.danger:hover {
+  border-color: var(--warn);
+  color: var(--warn);
+}
+
+/* A read-only row still shows its reason. "Why can I not edit this" is the
+   question the row exists to answer, so the answer is visible rather than a
+   tooltip nobody hovers. */
+.field-why {
+  color: var(--ink-soft);
+  font-style: italic;
+}
+
+/* ── refusals ────────────────────────────────────────────── */
+
+/* Rendered where the action was, and never collapsed into one styling: the
+   class is the host's machine-readable verdict, the message is the host's
+   words, and the guidance is what to do about it. Three lines because they
+   are three different things. */
+
+.field-outcome:empty {
+  display: none;
+}
+
+.refusal {
+  display: grid;
+  gap: 2px;
+  margin: 4px 0 8px;
+  padding: 6px 8px;
+  border-left: 3px solid var(--warn);
+  background: var(--bg-soft);
+  border-radius: 0 3px 3px 0;
+}
+
+.refusal-class {
+  font-weight: 700;
+  color: var(--warn);
+  letter-spacing: 0.02em;
+}
+
+.refusal-message {
+  overflow-wrap: anywhere;
+}
+
+.refusal-guidance {
+  color: var(--ink-soft);
+}

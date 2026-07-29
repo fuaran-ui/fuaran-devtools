@@ -17,9 +17,10 @@
 import { describe, expect, it } from 'vitest';
 
 import { createPagePeer, type HostSurface } from '../src/relay/pagePeer.js';
+import type { RelayEnvelope } from '../src/relay/protocol.js';
 import { readFixture, readManifest } from './support/corpus.js';
 import { describeMismatches, shapeMismatches } from './support/shape.js';
-import { bareHost, taggedHost } from './support/fakeHost.js';
+import { applyHost, applyHostWith, bareHost, taggedHost } from './support/fakeHost.js';
 
 const IDENTITY = { host: 'fuaran-devtools-page-relay', hostVersion: '0.1.0' };
 
@@ -43,25 +44,37 @@ const SERVED: Record<string, HostSurface | undefined> = {
   // The absent-surface case: `undefined` is the "no in-page debug surface"
   // state, and §11.1 permits the minimal listener that answers NOT_OPTED_IN.
   'refusal-not-opted-in': undefined,
+
+  // ── the write side ──
+  //
+  // Every one of these is driven against a host that wired an apply path and a
+  // change hub. What the peer contributes is the §8.3 MAPPING — the host's own
+  // envelope status onto the contract's refusal classes — so a fixture passing
+  // here is evidence about the mapping, not about the fake.
+  'hello-apply-capable': applyHost,
+  'apply-accepted': applyHost,
+  subscribe: applyHost,
+  unsubscribe: applyHost,
+  'refusal-validator-reject': applyHost,
+  'refusal-policy-denied': applyHost,
+  'refusal-decode-failed': applyHost,
+  'refusal-malformed-message': applyHost,
+  // (`refusal-capability-absent` stays on the READ-ONLY host above: the
+  // fixture's whole content is a host that does not offer apply, so serving it
+  // from an apply-capable one would assert nothing.)
 };
 
 /**
- * Fixtures outside a READ-ONLY peer's reach. §6.4: "a read-only host is fully
- * conformant" — a peer offering only the five reads implements the contract
- * completely, so these are not gaps, they are the shape of this peer.
+ * Fixtures no REQUEST can reach, because they are not responses.
+ *
+ * The change events are covered separately below — they are emitted, not
+ * answered, so the request-driven loop cannot exercise them. Enumerating them
+ * here keeps the partition total: a fixture added to the corpus that falls
+ * into neither list still fails the suite.
  */
 const NOT_SERVED: Record<string, string> = {
-  'hello-apply-capable': 'this peer never advertises apply or subscribe (§6.4)',
-  'apply-accepted': 'no apply capability — refused CAPABILITY_ABSENT instead',
-  subscribe: 'no subscribe capability — refused CAPABILITY_ABSENT instead',
-  unsubscribe: 'no subscribe capability — refused CAPABILITY_ABSENT instead',
-  'refusal-validator-reject': 'an apply-path refusal; unreachable without apply',
-  'refusal-policy-denied': 'an apply-path refusal; unreachable without apply',
-  'refusal-decode-failed': 'an apply-path refusal; unreachable without apply',
-  'refusal-malformed-message':
-    'the fixture malforms a subscribe, which this peer refuses CAPABILITY_ABSENT first (§6.4 ordering)',
-  'changed-apply': 'an event; a read-only peer emits none',
-  'changed-host': 'an event; a read-only peer emits none',
+  'changed-apply': 'an event: emitted by a subscription, never a response to a request',
+  'changed-host': 'an event: emitted by a subscription, never a response to a request',
 };
 
 const manifest = readManifest();
@@ -107,21 +120,86 @@ describe('relay@1.0 corpus — page peer', () => {
     });
   }
 
-  for (const [id, reason] of Object.entries(NOT_SERVED)) {
-    const fixture = manifest.fixtures.find((entry) => entry.id === id);
-    if (fixture?.kind === 'relay-event') continue;
-    const requestFile = fixture?.requestFile;
-    if (requestFile === undefined) continue;
+  // ── the emitted half (§8.5) ──
+  //
+  // Events are the one part of the contract a request-driven runner cannot
+  // reach: nothing asks for them. So they are driven from the other end — take
+  // a subscription, make the host change, and compare what the peer PUT ON THE
+  // WIRE against the fixture. Without this the peer could advertise
+  // `subscribe`, answer `subscribe.ok`, and emit nothing at all, and every
+  // fixture above would still pass.
+  for (const fixture of manifest.fixtures.filter((entry) => entry.kind === 'relay-event')) {
+    const eventFile = fixture.eventFile;
+    if (eventFile === undefined) continue;
 
-    it(`refuses ${id} — ${reason}`, () => {
-      const request = readFixture(requestFile);
-      const peer = createPagePeer(bareHost, IDENTITY);
-      const actual = peer.handle(request);
-      expect(actual).toBeDefined();
-      // Whatever the reason, the contract's floor holds: exactly one response
-      // per request, the id echoed, and never silence (§9.2, §10.1).
-      expect(actual?.id).toBe(request['id']);
-      expect(['refusal', 'hello.ok']).toContain(actual?.type);
+    it(`emits ${fixture.id}`, () => {
+      const expected = readFixture(eventFile);
+      const cause = (expected['payload'] as Record<string, unknown>)['cause'];
+      const emitted: RelayEnvelope[] = [];
+      const { host, driver } = applyHostWith();
+      const peer = createPagePeer(host, IDENTITY, { emit: (event) => emitted.push(event) });
+
+      const request = readFixture('subscribe.request.json');
+      const established = peer.handle(request);
+      expect(established?.type).toBe('subscribe.ok');
+
+      driver.emit('r-42', String(cause));
+      expect(emitted).toHaveLength(1);
+      const actual = emitted[0]!;
+
+      // §4.1: the event carries the id of the `subscribe` request that
+      // established it, so a client routes it without extra state.
+      expect(actual.id).toBe(request['id']);
+      const mismatches = shapeMismatches(expected, actual);
+      expect(mismatches, `\n${describeMismatches(mismatches)}\n`).toEqual([]);
     });
   }
+
+  it('classifies the event fixtures as unreachable by request, with a reason', () => {
+    // The partition's other half: these ids are declared out of the
+    // request-driven loop's reach, and the reason is recorded beside them.
+    for (const id of Object.keys(NOT_SERVED))
+      expect(manifest.fixtures.find((entry) => entry.id === id)?.kind).toBe('relay-event');
+  });
+
+  it('stops emitting for a released subscription (§8.5)', () => {
+    const emitted: RelayEnvelope[] = [];
+    const { host, driver } = applyHostWith();
+    const peer = createPagePeer(host, IDENTITY, { emit: (event) => emitted.push(event) });
+
+    peer.handle(readFixture('subscribe.request.json'));
+    driver.emit('r-42', 'apply');
+    expect(emitted).toHaveLength(1);
+
+    const released = peer.handle(readFixture('unsubscribe.request.json'));
+    expect(released?.type).toBe('unsubscribe.ok');
+    expect(driver.listenerCount()).toBe(0);
+
+    driver.emit('r-43', 'host');
+    // A released subscription emits NOTHING further. A peer that kept pushing
+    // would leave a client re-reading a tree it had explicitly stopped watching.
+    expect(emitted).toHaveLength(1);
+  });
+
+  it('releases every subscription on dispose (§8.5)', () => {
+    const { host, driver } = applyHostWith();
+    const peer = createPagePeer(host, IDENTITY, { emit: () => undefined });
+    peer.handle(readFixture('subscribe.request.json'));
+    expect(driver.listenerCount()).toBe(1);
+    peer.dispose();
+    expect(driver.listenerCount()).toBe(0);
+  });
+
+  it('answers `unsubscribe` for an id it never issued (§8.5)', () => {
+    const peer = createPagePeer(applyHost, IDENTITY);
+    const response = peer.handle({
+      $relay: 'relay@1.0',
+      dir: 'request',
+      id: 'c-99',
+      type: 'unsubscribe',
+      payload: { subscriptionId: 's-does-not-exist' },
+    });
+    // The caller's desired end state is reached either way, so this is `ok`.
+    expect(response?.type).toBe('unsubscribe.ok');
+  });
 });

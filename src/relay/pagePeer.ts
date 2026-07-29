@@ -12,22 +12,36 @@
 //  form, this module performs the §1.4 adaptation at the boundary — that
 //  adaptation is the page peer's responsibility and is invisible to a client.
 //
-//  READ-ONLY BY CONSTRUCTION. No `apply` and no `subscribe` capability is
-//  advertised and neither is served. §6.4: "a read-only host is fully
-//  conformant" — a page peer offering only the five reads implements this
-//  specification completely. Nothing here can mutate the inspected page.
+//  NO SIDE DOOR (§11.3). The peer adds no entry point the page did not already
+//  have. That was easy to see while it served only reads; it is the load-
+//  bearing claim now that it also serves `apply` and `subscribe`, so state it
+//  precisely: `__fuaran.apply` is the host's OWN policy-gated mutation path —
+//  gate, then decode, then apply, then candidate-validate, then fold — already
+//  registered by the host and already callable by any script on the page,
+//  including the browser console it was built for. This module contributes no
+//  apply engine, no validator, and no policy of its own; it maps the host's
+//  outcomes onto §8.3's refusal classes and nothing more.
+//
+//  CAPABILITY IS DERIVED, NEVER ASSUMED (§6.4). Every capability advertised
+//  here is a fact about the surface in front of the peer: `apply` only when the
+//  host says `canApply`, `subscribe` only when the surface exposes one. A host
+//  that wires neither gets a read-only peer, which §6.4 declares fully
+//  conformant — that is a shape, not a gap.
 // ============================================================================
 
 import {
   capabilityFor,
+  event as relayEvent,
   isRelayEnvelope,
   isRequestType,
+  KNOWN_EVENTS,
   negotiate,
   ok,
   refusal,
   RELAY_PROFILE,
   type BindingInfo,
   type Capability,
+  type RefusalClass,
   type RelayEnvelope,
   type RequestType,
 } from './protocol.js';
@@ -46,6 +60,23 @@ export interface HostSurface {
   getRenderedDom?(nodeId: string): unknown;
   inspectTree?(): unknown;
   findNodes?(kind: string): unknown;
+  /**
+   * The host's own claim that it wired a real apply path. Read as a claim, not
+   * as a hint: a surface exposing `apply` WITHOUT this flag is an older shape
+   * whose `apply` may be inert, and advertising a capability on a guess is the
+   * one thing §6.4 asks a peer not to do.
+   */
+  readonly canApply?: boolean;
+  apply?(op: unknown): unknown;
+  /** Committed-tree-change signal; returns a release handle. */
+  subscribe?(listener: (change: unknown) => void): unknown;
+  /** The host's own revision token, preferred over a digest when present. */
+  treeRevision?(): unknown;
+}
+
+/** How this peer emits unsolicited `changed` events (§8.5). */
+export interface PagePeerOptions {
+  readonly emit?: (event: RelayEnvelope) => void;
 }
 
 /** Identification this peer reports in `hello.ok` (§6.3) — display only. */
@@ -53,6 +84,18 @@ export interface PeerIdentity {
   readonly host: string;
   readonly hostVersion: string;
 }
+
+/**
+ * The `host` token the extension's own injected peer reports.
+ *
+ * Lives here, with no side effect attached, because THREE contexts need to
+ * recognise it and only one of them may run the injection: the injected peer
+ * declares it, the client re-probes when it sees it (a handshake answered by
+ * our own peer does not yet prove no host peer exists), and the panel labels
+ * it. Importing the injection module to get the string would install a page
+ * peer in the isolated world.
+ */
+export const EXTENSION_PEER_HOST = 'fuaran-devtools-page-relay';
 
 const isPlainObject = (value: unknown): value is Record<string, unknown> =>
   typeof value === 'object' && value !== null && !Array.isArray(value);
@@ -199,6 +242,99 @@ export const adaptBindingValue = (
   }
 };
 
+// ─── §8.3 adaptation — the host's apply envelope onto refusal classes ───
+
+/**
+ * What the host's `apply` said, in the contract's vocabulary.
+ *
+ * The mapping is one-to-one and deliberately NOT collapsible (§8.4): each of
+ * `VALIDATOR_REJECT` / `POLICY_DENIED` / `CAPABILITY_ABSENT` implies a
+ * different next action from the user — change the edit, accept that the
+ * policy is the gate, or turn the capability on — so reporting one as another
+ * sends them to fix something that was never the problem.
+ *
+ * `unwired` maps to `CAPABILITY_ABSENT` rather than to a rejection: an inert
+ * apply path means the entry point is not there, and calling that a validator
+ * rejection would tell the user their perfectly legal op was illegal.
+ */
+export type ApplyOutcome =
+  | { readonly kind: 'applied'; readonly treeRevision?: string }
+  | {
+      readonly kind: 'refused';
+      readonly refusal: RefusalClass;
+      readonly message: string;
+      readonly detail?: Readonly<Record<string, unknown>>;
+    };
+
+/** The wire form of the codec's decode error, carried verbatim in `detail` (§9.3). */
+const decodeDetail = (value: unknown): Readonly<Record<string, unknown>> | undefined => {
+  if (!isPlainObject(value)) return undefined;
+  const error = value['decodeError'];
+  if (!isPlainObject(error)) return undefined;
+  const out: Record<string, unknown> = {};
+  // Both host tiers emit the codec's own field names; carried through as found
+  // rather than renamed, since §9.3 says the DecodeError travels verbatim.
+  for (const key of ['Code', 'Path', 'Message', 'ExpectedShape', 'code', 'path', 'message'])
+    if (key in error) out[key] = error[key];
+  return Object.keys(out).length === 0 ? undefined : out;
+};
+
+export const adaptApplyEnvelope = (value: unknown): ApplyOutcome => {
+  if (!isPlainObject(value))
+    return {
+      kind: 'refused',
+      refusal: 'VALIDATOR_REJECT',
+      message: 'The host surface returned no apply envelope.',
+    };
+
+  const message = typeof value['error'] === 'string' ? value['error'] : 'The host refused the op.';
+  switch (value['status']) {
+    case 'applied':
+      return {
+        kind: 'applied',
+        ...(typeof value['treeRevision'] === 'string'
+          ? { treeRevision: value['treeRevision'] }
+          : {}),
+      };
+    case 'denied':
+      // `detail` is deliberately empty: explaining WHY policy refused hands out
+      // a map of the policy (§11.5).
+      return {
+        kind: 'refused',
+        refusal: 'POLICY_DENIED',
+        message: "The host's policy layer refused this mutation.",
+      };
+    case 'decodeFailed': {
+      const detail = decodeDetail(value);
+      return {
+        kind: 'refused',
+        refusal: 'DECODE_FAILED',
+        message: 'The op is not a recognised TreeOp.',
+        ...(detail === undefined ? {} : { detail }),
+      };
+    }
+    case 'rejected':
+      return {
+        kind: 'refused',
+        refusal: 'VALIDATOR_REJECT',
+        message,
+        ...(typeof value['code'] === 'string' ? { detail: { code: value['code'] } } : {}),
+      };
+    case 'unwired':
+      return {
+        kind: 'refused',
+        refusal: 'CAPABILITY_ABSENT',
+        message,
+        detail: { capability: 'apply' },
+      };
+    default:
+      // An envelope shape this peer does not know. Reporting it as a validator
+      // rejection is honest — the op did not apply and the host said so —
+      // whereas inventing `applied` would claim a mutation that never happened.
+      return { kind: 'refused', refusal: 'VALIDATOR_REJECT', message };
+  }
+};
+
 // ─── Tree revision (§5.4) ───────────────────────────────────────────
 
 /**
@@ -222,6 +358,12 @@ export const digest = (text: string): string => {
 
 const treeRevision = (surface: HostSurface): string => {
   try {
+    // The host's own token wins when it has one: it is the token the host's
+    // `changed` events carry, so a client comparing an event's revision against
+    // a `hello.ok` revision is comparing like with like. A digest of the
+    // snapshot is the fallback for a surface that publishes none.
+    const own = surface.treeRevision?.();
+    if (typeof own === 'string' && own !== '') return own;
     const tree = surface.inspectTree?.();
     return tree === undefined ? 'r-none' : digest(JSON.stringify(tree) ?? '');
   } catch {
@@ -233,8 +375,14 @@ const treeRevision = (surface: HostSurface): string => {
 
 /**
  * The capabilities this peer will serve, derived from what the surface
- * actually offers. `apply` and `subscribe` are NEVER advertised: this peer is
- * read-only by construction, which §6.4 declares fully conformant.
+ * actually offers — never from what this build can code for.
+ *
+ * `apply` needs BOTH a callable entry point and the host's explicit
+ * `canApply === true`. A surface exposing `apply` while wiring no handler
+ * answers every op with the inert `unwired` envelope, and advertising that as
+ * a capability would make the panel offer edit affordances no page can honour.
+ * A host that opts out of either is read-only, which §6.4 declares fully
+ * conformant.
  */
 export const capabilitiesOf = (surface: HostSurface): Capability[] => {
   const advertised: Capability[] = [];
@@ -243,6 +391,8 @@ export const capabilitiesOf = (surface: HostSurface): Capability[] => {
   if (typeof surface.getRenderedDom === 'function') advertised.push('read.renderedDom');
   if (typeof surface.inspectTree === 'function') advertised.push('read.tree');
   if (typeof surface.findNodes === 'function') advertised.push('read.findNodes');
+  if (typeof surface.apply === 'function' && surface.canApply === true) advertised.push('apply');
+  if (typeof surface.subscribe === 'function') advertised.push('subscribe');
   return advertised;
 };
 
@@ -255,6 +405,10 @@ export interface PagePeer {
    * event, or a non-envelope) — §4 and §10.4.
    */
   handle(message: unknown): RelayEnvelope | undefined;
+  /** The capabilities this peer currently advertises (§6.3). */
+  capabilities(): readonly Capability[];
+  /** Release every subscription. §8.5 requires this on page unload. */
+  dispose(): void;
 }
 
 const str = (payload: Readonly<Record<string, unknown>>, key: string): string | undefined => {
@@ -263,7 +417,19 @@ const str = (payload: Readonly<Record<string, unknown>>, key: string): string | 
 };
 
 /**
- * Build a page peer over a host surface. `surface` is `undefined` when the
+ * Where the peer's surface comes from: a fixed surface, or a lookup evaluated
+ * PER REQUEST.
+ *
+ * The lookup form is the one the extension uses, and it is not a convenience:
+ * a host replaces the surface object on every tree change, so a peer that
+ * captured one instance would answer every later request from the tree that
+ * was live when it was built. Reads would go stale silently; an `apply` would
+ * be evaluated against a tree that no longer exists.
+ */
+export type HostSurfaceSource = HostSurface | undefined | (() => HostSurface | undefined);
+
+/**
+ * Build a page peer over a host surface. The surface is `undefined` when the
  * page carries no in-page introspection global; the peer then answers
  * `NOT_OPTED_IN` to every request including `hello` (§9.3, §11.1).
  *
@@ -275,9 +441,19 @@ const str = (payload: Readonly<Record<string, unknown>>, key: string): string | 
  * panel reporting "Fuaran page, no debug surface" and reporting nothing.
  */
 export const createPagePeer = (
-  surface: HostSurface | undefined,
+  source: HostSurfaceSource,
   identity: PeerIdentity,
+  options: PagePeerOptions = {},
 ): PagePeer => {
+  const surfaceNow = (): HostSurface | undefined =>
+    typeof source === 'function' ? source() : source;
+
+  interface Subscription {
+    readonly release: () => void;
+  }
+  const subscriptions = new Map<string, Subscription>();
+  let subscriptionCounter = 0;
+
   const serve = (request: RelayEnvelope, type: RequestType, live: HostSurface): RelayEnvelope => {
     const { id, payload } = request;
     const deny = (
@@ -416,19 +592,103 @@ export const createPagePeer = (
         return ok(id, type, resolution);
       }
 
-      // Read-only peer: the mutation and subscription entry points exist in the
-      // contract but are not advertised here, so they never reach this switch —
-      // the capability gate below refuses them with CAPABILITY_ABSENT first.
-      case 'apply':
-      case 'subscribe':
-      case 'unsubscribe':
-        return deny('CAPABILITY_ABSENT', 'This peer is read-only.', {
-          capability: capabilityFor(type) ?? type,
+      case 'apply': {
+        const op = payload['op'];
+        if (!isPlainObject(op))
+          return deny('MALFORMED_MESSAGE', 'apply requires an embedded JSON object `op`.', {
+            path: 'payload.op',
+          });
+
+        // `attribution` (§8.2) is advisory and UNTRUSTED: it is forwarded to
+        // nothing, grants nothing, and is not read here at all. The host's own
+        // audit trail is the host's business; a peer that let it influence the
+        // decision below would have turned advisory metadata into authority.
+        const outcome = adaptApplyEnvelope(live.apply?.(op));
+        if (outcome.kind === 'applied')
+          return ok(id, type, {
+            applied: true,
+            // §8.3: the revision AFTER the op. A host that returned none is
+            // asked again rather than reported as an empty token.
+            treeRevision: outcome.treeRevision ?? treeRevision(live),
+          });
+        return deny(outcome.refusal, outcome.message, outcome.detail);
+      }
+
+      case 'subscribe': {
+        const events = payload['events'];
+        if (!Array.isArray(events) || events.length === 0)
+          return deny('MALFORMED_MESSAGE', 'subscribe requires a non-empty `events` array.', {
+            path: 'payload.events',
+          });
+        // §8.5: unknown event names are IGNORED rather than refused, provided
+        // at least one is recognised — that is what makes "additive event names
+        // are a minor bump" safe. None recognised is a malformed request.
+        const accepted = events.filter(
+          (name): name is string =>
+            typeof name === 'string' && (KNOWN_EVENTS as readonly string[]).includes(name),
+        );
+        if (accepted.length === 0)
+          return deny('MALFORMED_MESSAGE', 'No recognised event name in `events`.', {
+            path: 'payload.events',
+          });
+
+        subscriptionCounter += 1;
+        const subscriptionId = `s-${subscriptionCounter}`;
+        const emit = options.emit;
+        const release = live.subscribe?.((change) => {
+          if (emit === undefined) return;
+          const detail = isPlainObject(change) ? change : {};
+          const cause = detail['cause'];
+          emit(
+            relayEvent(id, 'changed', {
+              subscriptionId,
+              event: 'tree',
+              treeRevision:
+                typeof detail['treeRevision'] === 'string'
+                  ? detail['treeRevision']
+                  : treeRevision(live),
+              // §8.5: a peer that cannot distinguish the two MUST say `host`.
+              // Guessing `apply` would credit this client with a change some
+              // other writer made.
+              cause: cause === 'apply' || cause === 'host' ? cause : 'host',
+            }),
+          );
         });
+        subscriptions.set(subscriptionId, {
+          release: typeof release === 'function' ? (release as () => void) : () => {},
+        });
+
+        return ok(id, type, {
+          subscriptionId,
+          events: accepted,
+          treeRevision: treeRevision(live),
+        });
+      }
+
+      case 'unsubscribe': {
+        const subscriptionId = str(payload, 'subscriptionId');
+        if (subscriptionId === undefined)
+          return deny('MALFORMED_MESSAGE', 'unsubscribe requires a string `subscriptionId`.', {
+            path: 'payload.subscriptionId',
+          });
+        // §8.5: an unknown or already-released id is `ok`, never a refusal —
+        // the caller's desired end state is reached either way.
+        subscriptions.get(subscriptionId)?.release();
+        subscriptions.delete(subscriptionId);
+        return ok(id, type, { subscriptionId });
+      }
     }
   };
 
   return {
+    capabilities: () => {
+      const live = surfaceNow();
+      return live === undefined ? [] : capabilitiesOf(live);
+    },
+    dispose(): void {
+      for (const subscription of subscriptions.values()) subscription.release();
+      subscriptions.clear();
+    },
     handle(message: unknown): RelayEnvelope | undefined {
       if (!isRelayEnvelope(message)) return undefined;
       // §4: a page peer ignores anything that is not a request (§10.4 for
@@ -436,6 +696,10 @@ export const createPagePeer = (
       if (message.dir !== 'request') return undefined;
 
       const id = message.id;
+      // Resolved ONCE per request, not once per use: two lookups inside one
+      // exchange could straddle a re-render and answer half the request from
+      // one tree and half from the next.
+      const surface = surfaceNow();
 
       // Ordering is deliberate and disclosure-driven. NOT_OPTED_IN is checked
       // FIRST because it is the least disclosing refusal there is (§11.4): it

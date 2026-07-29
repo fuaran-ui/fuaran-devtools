@@ -17,10 +17,14 @@ import {
   acceptsMessageEvent,
   capabilityFor,
   isRelayEnvelope,
+  KNOWN_EVENTS,
   negotiate,
   RELAY_PROFILE,
   request,
+  type ApplyOk,
+  type Attribution,
   type Capability,
+  type ChangedEvent,
   type FoundNodes,
   type HelloOkPayload,
   type BindingValue,
@@ -29,6 +33,7 @@ import {
   type RelayEnvelope,
   type RenderedDom,
   type RequestType,
+  type SubscribeOk,
   type TreeSnapshot,
 } from './protocol.js';
 
@@ -116,10 +121,13 @@ const asRefusal = (payload: Readonly<Record<string, unknown>>): RefusalPayload =
 const isObject = (value: unknown): value is Record<string, unknown> =>
   typeof value === 'object' && value !== null && !Array.isArray(value);
 
+export type ChangedHandler = (event: ChangedEvent) => void;
+
 export class RelayClient {
   private readonly transport: RelayTransport;
   private readonly options: RelayClientOptions;
   private readonly pending = new Map<string, (envelope: RelayEnvelope) => void>();
+  private readonly changedHandlers = new Set<ChangedHandler>();
   private readonly stopListening: () => void;
   private counter = 0;
   private capabilities: readonly string[] | undefined;
@@ -139,10 +147,29 @@ export class RelayClient {
   dispose(): void {
     this.stopListening();
     this.pending.clear();
+    this.changedHandlers.clear();
+  }
+
+  /**
+   * Register a handler for `changed` events (§8.5). Returns an unsubscribe
+   * function for the HANDLER, which is not the same act as releasing the
+   * subscription — see {@link unsubscribe}.
+   */
+  onChanged(handler: ChangedHandler): () => void {
+    this.changedHandlers.add(handler);
+    return () => this.changedHandlers.delete(handler);
   }
 
   private onEnvelope(envelope: RelayEnvelope): void {
-    if (envelope.dir === 'event') return; // No subscription is taken on the read side.
+    // §10.4: an event NEVER settles a pending request, even when its `id` is
+    // the subscribe request's id and a read with that id is in flight. The
+    // direction decides, never the correlation.
+    if (envelope.dir === 'event') {
+      if (envelope.type !== 'changed') return; // §10.1: an unknown event is ignored, not an error.
+      const shaped = shapeChanged(envelope.payload);
+      if (shaped !== undefined) for (const handler of this.changedHandlers) handler(shaped);
+      return;
+    }
     const resolve = this.pending.get(envelope.id);
     // §10.4: an unsolicited response — one whose id matches no outstanding
     // request — is ignored, and never applied as state.
@@ -306,10 +333,88 @@ export class RelayClient {
     );
   }
 
+  /**
+   * §8 — the contract's ONE mutating entry point. `op` is a `TreeOp` in
+   * canonical wire JSON carried as a STRUCTURED OBJECT, not a string: §8.2
+   * puts the canonical-serialisation obligation on the page peer, since
+   * canonical ordering is a property of the wire format the host already
+   * implements and a structured-clone channel has no text layer anyway.
+   *
+   * There are only two outcomes (§8.3): `apply.ok`, or a refusal naming its
+   * class. A refused op left the tree unchanged — so a caller renders the
+   * refusal and re-reads nothing.
+   */
+  apply(
+    op: Readonly<Record<string, unknown>>,
+    attribution?: Attribution,
+  ): Promise<RelayResult<ApplyOk>> {
+    return this.call<ApplyOk>(
+      'apply',
+      attribution === undefined ? { op } : { op, attribution },
+      (payload) => {
+        if (payload['applied'] !== true) return undefined;
+        return { applied: true, treeRevision: String(payload['treeRevision'] ?? '') };
+      },
+      this.timeout(),
+    );
+  }
+
+  /** §8.5 — establish a change subscription. `events` defaults to the one name
+   *  `relay@1.0` defines; a peer ignores names it does not know. */
+  subscribe(events: readonly string[] = KNOWN_EVENTS): Promise<RelayResult<SubscribeOk>> {
+    return this.call<SubscribeOk>(
+      'subscribe',
+      { events: [...events] },
+      (payload) => {
+        const established = payload['events'];
+        if (typeof payload['subscriptionId'] !== 'string' || !Array.isArray(established))
+          return undefined;
+        return {
+          subscriptionId: payload['subscriptionId'],
+          events: established.filter((name): name is string => typeof name === 'string'),
+          treeRevision: String(payload['treeRevision'] ?? ''),
+        };
+      },
+      this.timeout(),
+    );
+  }
+
+  /** §8.5 — release a subscription. Releasing an unknown or already-released
+   *  id is `unsubscribe.ok`, not a refusal: the desired end state is reached. */
+  unsubscribe(subscriptionId: string): Promise<RelayResult<{ subscriptionId: string }>> {
+    return this.call<{ subscriptionId: string }>(
+      'unsubscribe',
+      { subscriptionId },
+      (payload) =>
+        typeof payload['subscriptionId'] === 'string'
+          ? { subscriptionId: payload['subscriptionId'] }
+          : undefined,
+      this.timeout(),
+    );
+  }
+
   private timeout(): number {
     return this.options.requestTimeoutMs ?? REQUEST_TIMEOUT_MS;
   }
 }
+
+/**
+ * Narrow a `changed` payload (§8.5). `cause` is carried through as the host
+ * stated it — §10.3 keeps an unrecognised enumerated value rather than
+ * normalising it, so a peer that grows a third cause is not misreported as
+ * one of the two this build knows.
+ */
+export const shapeChanged = (
+  payload: Readonly<Record<string, unknown>>,
+): ChangedEvent | undefined => {
+  if (typeof payload['treeRevision'] !== 'string') return undefined;
+  return {
+    subscriptionId: String(payload['subscriptionId'] ?? ''),
+    event: String(payload['event'] ?? 'tree'),
+    treeRevision: payload['treeRevision'],
+    cause: String(payload['cause'] ?? 'host'),
+  };
+};
 
 // ─── Response shaping ───────────────────────────────────────────────
 

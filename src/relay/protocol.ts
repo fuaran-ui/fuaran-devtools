@@ -152,6 +152,45 @@ export interface FoundNodes {
   readonly nodeIds: readonly string[];
 }
 
+/**
+ * `apply.ok` payload (§8.3). `treeRevision` is the revision AFTER the op; a
+ * client holding a subscription also receives a `changed` event carrying the
+ * same revision, and must tolerate the two arriving in either order.
+ */
+export interface ApplyOk {
+  readonly applied: boolean;
+  readonly treeRevision: string;
+}
+
+/**
+ * Advisory metadata recorded against a mutation (§8.2). It grants nothing: a
+ * host MUST NOT let it influence any of the §8.3 decisions, so this is
+ * provenance for the host's audit trail and nothing else.
+ */
+export interface Attribution {
+  readonly actor?: string;
+  readonly reason?: string;
+}
+
+/** `subscribe.ok` payload (§8.5). `events` echoes the subset ESTABLISHED. */
+export interface SubscribeOk {
+  readonly subscriptionId: string;
+  readonly events: readonly string[];
+  readonly treeRevision: string;
+}
+
+/** The event names `relay@1.0` defines (§8.5); more is a minor bump. */
+export const KNOWN_EVENTS = ['tree'] as const;
+
+/** `changed` event payload (§8.5). */
+export interface ChangedEvent {
+  readonly subscriptionId: string;
+  readonly event: string;
+  readonly treeRevision: string;
+  /** `"apply"` or `"host"`; a peer that cannot distinguish MUST emit `"host"`. */
+  readonly cause: string;
+}
+
 /** `refusal` payload (§9.1). */
 export interface RefusalPayload {
   readonly class: RefusalClass | string;

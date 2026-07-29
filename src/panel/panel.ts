@@ -15,22 +15,23 @@
 // ============================================================================
 
 import type { BindingValue, NodeSnapshot, RenderedDom, TreeSnapshot } from '../relay/protocol.js';
-import type { StatusResult } from '../bridge.js';
+import type { ApplyResult, StatusResult } from '../bridge.js';
+import type { TreeOpJson } from '../edit/ops.js';
 import { PanelConnection } from './connection.js';
-import { ancestorIds, breadcrumb, countNodes, findNode, flattenTree } from './treeModel.js';
+import {
+  ancestorIds,
+  breadcrumb,
+  countNodes,
+  findNode,
+  flattenTree,
+  pathTo,
+  reresolve,
+} from './treeModel.js';
+import { definition, el } from './dom.js';
+import { renderPropertyEditor, renderStructural, type EditContext } from './editSurface.js';
+import { loadWireSchema, WIRE_SCHEMA_FILE, type DerivedSchema } from './schemaSource.js';
 
 const connection = new PanelConnection(chrome.devtools.inspectedWindow.tabId);
-
-const el = <K extends keyof HTMLElementTagNameMap>(
-  tag: K,
-  className?: string,
-  text?: string,
-): HTMLElementTagNameMap[K] => {
-  const node = document.createElement(tag);
-  if (className !== undefined) node.className = className;
-  if (text !== undefined) node.textContent = text;
-  return node;
-};
 
 const byId = (id: string): HTMLElement => {
   const node = document.getElementById(id);
@@ -49,8 +50,22 @@ const pickButton = byId('pick') as HTMLButtonElement;
 
 let tree: TreeSnapshot | undefined;
 let selected: string | undefined;
+/**
+ * The selection as a ROOT→NODE PATH OF IDS, not an index and not a captured
+ * node. This is what survives an external mutation: when the tree is re-read,
+ * the deepest surviving id on the path is re-selected and its position
+ * recomputed. An index would still resolve after a concurrent insert — to the
+ * wrong node, silently, and the next edit would land there.
+ */
+let selectedPath: readonly string[] = [];
 let capabilities: readonly string[] = [];
 let picking = false;
+/** The node picked up for a move, if any. */
+let held: string | undefined;
+/** The bundled wire schema, once loaded. `undefined` is a degraded mode. */
+let derived: DerivedSchema | undefined;
+/** The last revision the page reported, so a `changed` echo is not re-read twice. */
+let lastRevision: string | undefined;
 const collapsed = new Set<string>();
 
 // ─── Status ─────────────────────────────────────────────────────────
@@ -172,13 +187,6 @@ const renderBreadcrumb = (): void => {
 
 // ─── Node card ──────────────────────────────────────────────────────
 
-const definition = (term: string, value: string): HTMLElement => {
-  const row = el('div', 'kv');
-  row.appendChild(el('span', 'k', term));
-  row.appendChild(el('span', 'v', value));
-  return row;
-};
-
 /** Render one binding's resolution, keeping the five §7.3 statuses distinct. */
 const bindingValueText = (value: BindingValue): string => {
   switch (value.status) {
@@ -233,7 +241,39 @@ const renderCard = (node: NodeSnapshot): void => {
   geometry.appendChild(el('h2', 'section-title', 'rendered'));
   geometry.appendChild(el('p', 'muted', '…'));
   cardPane.appendChild(geometry);
+
+  const context = editContext(node);
+  cardPane.appendChild(renderPropertyEditor(context));
+  cardPane.appendChild(renderStructural(context));
 };
+
+/**
+ * The write surfaces' view of the panel. Assembled per render so the surfaces
+ * hold no state of their own: everything they act on — tree, capabilities,
+ * held node — is read from here at the moment they are built, which is what
+ * keeps them consistent with a tree that may have just been re-read.
+ */
+const editContext = (node: NodeSnapshot): EditContext => ({
+  capabilities,
+  derived,
+  tree,
+  node,
+  held,
+  commit: async (op: TreeOpJson, reason: string) => {
+    const result = await connection.request<ApplyResult>('apply', { op, reason });
+    // The post-op revision is recorded here so the `changed` event this very
+    // edit causes is recognised as its own echo. Otherwise every edit re-reads
+    // the tree twice: once because the panel knows it changed it, and again
+    // when the page says so.
+    if (result.ok) lastRevision = result.treeRevision;
+    return result;
+  },
+  reload: () => void refresh(),
+  setHeld: (nodeId) => {
+    held = nodeId;
+    if (selected !== undefined) void select(selected);
+  },
+});
 
 const fillBindingValues = async (node: NodeSnapshot): Promise<void> => {
   if (!capabilities.includes('read.bindingValue')) {
@@ -289,7 +329,12 @@ const round = (value: number): string => (Math.round(value * 10) / 10).toString(
 
 const select = async (nodeId: string): Promise<void> => {
   selected = nodeId;
-  if (tree !== undefined) for (const id of ancestorIds(tree, nodeId)) collapsed.delete(id);
+  if (tree !== undefined) {
+    // Remembered as a path, so a concurrent mutation that removes this node
+    // still leaves a trail back to the nearest surviving ancestor.
+    selectedPath = pathTo(tree, nodeId) ?? [nodeId];
+    for (const id of ancestorIds(tree, nodeId)) collapsed.delete(id);
+  }
   renderTree();
   renderBreadcrumb();
 
@@ -357,10 +402,26 @@ const refresh = async (): Promise<void> => {
       return;
     }
 
+    // Established once per tab, and idempotent: without it the panel would
+    // only ever show the tree as it was at the last button press, which is
+    // exactly wrong on a page something else is also driving.
+    if (capabilities.includes('subscribe'))
+      await connection.request('watch').catch(() => undefined);
+
     tree = await connection.request<TreeSnapshot>('readTree');
     renderTree();
-    if (selected !== undefined && findNode(tree, selected) !== undefined) await select(selected);
-    else {
+
+    if (selected !== undefined && findNode(tree, selected) !== undefined) {
+      await select(selected);
+    } else if (selectedPath.length > 0) {
+      // The selected node is gone — removed by this session or by another
+      // writer. Re-resolve to the deepest surviving ancestor rather than
+      // dropping the selection: the user's place in the tree is roughly where
+      // it was, which is what they need after a removal.
+      const resolved = reresolve(tree, selectedPath);
+      const landing = resolved[resolved.length - 1];
+      if (landing !== undefined) await select(landing);
+    } else {
       selected = undefined;
       crumbBar.replaceChildren();
       cardPane.replaceChildren(emptyState('Select a node', 'Pick one in the tree, or use Select.'));
@@ -400,15 +461,37 @@ connection.onEvent((event) => {
     void select(event.nodeId);
   } else if (event.event === 'pickCancelled') {
     setPicking(false);
+  } else if (event.event === 'changed') {
+    // A change event is a STALENESS SIGNAL, not a change log: it says the tree
+    // moved, never how. So the panel re-reads rather than trying to patch, and
+    // the same handler serves an edit made here and an edit made by something
+    // else driving the page — which is the point. The revision is compared,
+    // never parsed: an event repeating a revision already seen (both peers on
+    // a page emit one) costs nothing rather than a second full re-read.
+    if (event.treeRevision !== undefined && event.treeRevision === lastRevision) return;
+    if (event.treeRevision !== undefined) lastRevision = event.treeRevision;
+    void refresh();
   }
 });
 
 // A navigation replaces the page and its injected relay, so the panel re-probes
-// rather than showing a tree that no longer exists.
+// rather than showing a tree that no longer exists. The selection PATH is
+// dropped too: ids are per-tree, and re-resolving one against a different app's
+// tree could land on an unrelated node that happens to share an id.
 chrome.devtools.network.onNavigated.addListener(() => {
   tree = undefined;
   selected = undefined;
+  selectedPath = [];
+  held = undefined;
+  lastRevision = undefined;
   void refresh();
 });
 
-void refresh();
+// The schema is loaded before the first probe so the editor is derived from the
+// first render rather than appearing a beat later. A failure is a degraded
+// mode, never a blocked panel — `refresh` runs either way.
+void loadWireSchema(chrome.runtime.getURL(WIRE_SCHEMA_FILE))
+  .then((loaded) => {
+    derived = loaded;
+  })
+  .finally(() => void refresh());

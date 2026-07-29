@@ -49,3 +49,24 @@ export const readManifest = (): CorpusManifest => {
 
 export const readFixture = (file: string): Record<string, unknown> =>
   JSON.parse(readFileSync(join(CORPUS_DIR, file), 'utf8')) as Record<string, unknown>;
+
+/** The canonical wire-format JSON Schema — the artefact the editor derives from. */
+export const WIRE_SCHEMA_PATH = resolve(CORPUS_DIR, '../schema.json');
+
+/**
+ * Read the real schema, never a fixture of one.
+ *
+ * A hand-written stand-in would test this repo's idea of the format rather than
+ * the format, and the derivation's whole claim is that it tracks the contract:
+ * a kind added to the vocabulary must appear here with no change to the code.
+ * That claim is only tested against the actual artefact.
+ */
+export const readWireSchema = (): Record<string, unknown> => {
+  if (!existsSync(WIRE_SCHEMA_PATH))
+    throw new Error(
+      `The canonical wire schema is missing at ${WIRE_SCHEMA_PATH}.\n` +
+        'Clone the specification repository as a sibling of this repo:\n' +
+        '  git clone https://github.com/fuaran-ui/fuaran-ui-specification ../wire-format-fixtures',
+    );
+  return JSON.parse(readFileSync(WIRE_SCHEMA_PATH, 'utf8')) as Record<string, unknown>;
+};
