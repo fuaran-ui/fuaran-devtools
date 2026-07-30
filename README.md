@@ -30,9 +30,14 @@ that point on — the attribution is evidence rather than a claim.
 
 ## Status
 
-Early. The extension is not yet published to any browser store — load it unpacked (below).
+Early. The extension is not yet published to any browser store — install it from a release zip or
+load it unpacked (below).
 
-## Install (unpacked)
+## Install
+
+Grab `fuaran-devtools-vX.Y.Z.zip` from the
+[latest release](https://github.com/fuaran-ui/fuaran-devtools/releases/latest) and unzip it, or
+build it yourself:
 
 ```
 pnpm install
@@ -40,7 +45,8 @@ pnpm build
 ```
 
 Then in Chrome or Edge: `chrome://extensions` → enable **Developer mode** → **Load unpacked** →
-select this repo's `dist/` directory. Reload any page you want to inspect afterwards.
+select the unzipped folder (or this repo's `dist/` directory). Reload any page you want to inspect
+afterwards.
 
 On Windows, `pwsh ./run.ps1` does the whole gate — install, format check, typecheck, test, build.
 
