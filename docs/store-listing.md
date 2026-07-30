@@ -77,11 +77,15 @@ _(CWS review asks for this whenever a content script matches all sites.)_
 
 > The extension is a DevTools panel: it must be able to attach to whatever page the developer has
 > DevTools open on, which cannot be known in advance — the same posture as other framework devtools
-> (React Developer Tools, Vue.js devtools). The content script's first act on any page is a passive
-> check for Fuaran-rendered markup (`data-fuaran-node-id` attributes); on a page without it, nothing
-> is injected, no listener is registered, and no further work happens. The extension requests no
-> permissions: it cannot read browsing history, storage, or cookies, and performs no network
-> requests.
+> (React Developer Tools, Vue.js devtools). The suggested alternatives do not fit this class of
+> extension: `activeTab` is granted only by a gesture on the extension itself (toolbar click,
+> context menu, command), which opening a DevTools panel is not, and it would require adding the
+> `scripting` permission to inject — strictly more privilege than the current manifest, which
+> requests no permissions at all. Site-scoping is impossible by definition for a developer tool
+> that attaches to the page under inspection. The content script's first act on any page is a
+> passive check for Fuaran-rendered markup (`data-fuaran-node-id` attributes); on a page without
+> it, nothing is injected, no listener is registered, and no further work happens. The extension
+> cannot read browsing history, storage, or cookies, and performs no network requests.
 
 ## Edge Add-ons deltas
 
