@@ -25,3 +25,12 @@ node docs/screenshot-harness/capture.mjs                # writes docs/screenshot
 `FUARAN_SHOTS_BROWSER` overrides the browser executable (defaults to the standard Windows Edge
 path). Or open `http://localhost:24190/docs/screenshot-harness/harness.html` in any browser and
 capture by hand at a 1280×800 viewport.
+
+## test-page.html — for the REAL extension
+
+`test-page.html` is the same demo page carrying only its markup and the debug host surface — no
+shims, no bundled content script — so the actually-installed extension can be exercised against it
+(the harness's self-driven `page.html` would fight a real extension: two clients, two injected
+peers). It is what the store listings' certification notes point reviewers at, and it needs no
+build: serve the repo root and open it. Keep its markup in step with `page.html` when the demo
+changes.

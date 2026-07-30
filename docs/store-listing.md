@@ -87,7 +87,50 @@ _(CWS review asks for this whenever a content script matches all sites.)_
 > it, nothing is injected, no listener is registered, and no further work happens. The extension
 > cannot read browsing history, storage, or cookies, and performs no network requests.
 
-## Edge Add-ons deltas
+## Edge Add-ons listing
 
-Same zip, same copy. Edge's dashboard asks for the same privacy declarations in its own form; the
-answers above map one-to-one.
+Same zip, same copy — the sections above fill Edge's Partner Center forms one-to-one. What follows
+is only what Edge asks for beyond the CWS set.
+
+**Assets** (in [`store-assets/`](store-assets/)):
+
+| Field                          | Value                                                           |
+| ------------------------------ | --------------------------------------------------------------- |
+| Store logo (300×300, required) | `store-assets/logo-300.png`                                     |
+| Promotional tile (440×280)     | `store-assets/promo-440x280.png`                                |
+| Screenshots                    | the same two 1280×800 shots from [`screenshots/`](screenshots/) |
+
+**Properties:**
+
+| Field              | Value                                                             |
+| ------------------ | ----------------------------------------------------------------- |
+| Category           | Developer tools                                                   |
+| Privacy policy URL | https://github.com/fuaran-ui/fuaran-devtools/blob/main/PRIVACY.md |
+| Website            | https://github.com/fuaran-ui/fuaran-devtools                      |
+| Support contact    | https://github.com/fuaran-ui/fuaran-devtools/issues               |
+| Search terms       | fuaran, devtools, inspector, typed tree, ui debugging             |
+
+**Notes for certification** _(Edge's reviewer-facing field — testing instructions):_
+
+> This is a DevTools panel for pages rendered by Fuaran hosts (an open UI-as-data format —
+> https://github.com/fuaran-ui/fuaran-ui-specification). It requests no permissions, performs no
+> network requests, and collects no data.
+>
+> On any ordinary page the extension is inert by design: the content script's only act is a passive
+> check for `data-fuaran-node-id` markup, and without it nothing is injected and no listener is
+> registered. To verify this state: open DevTools on any site → the "Fuaran" panel reports "This
+> page has no Fuaran-rendered markup."
+>
+> To see the panel active against a Fuaran page: the extension's public repository carries a
+> self-contained test page — clone https://github.com/fuaran-ui/fuaran-devtools, serve the repo
+> root (`npx http-server . -p 24190`), and open
+> `http://localhost:24190/docs/screenshot-harness/test-page.html` in a tab (no build needed — the
+> page is static markup plus a debug host surface). With the extension loaded, the DevTools
+> "Fuaran" panel shows the page's typed node tree; selecting nodes highlights them in the page, and
+> edits round-trip through the page's own gated apply path.
+>
+> The content script matches `<all_urls>` because a DevTools panel must attach to whatever page the
+> developer is inspecting; `activeTab` does not fit (no qualifying gesture exists for opening a
+> DevTools panel, and it would require adding the `scripting` permission — more privilege, not
+> less). This is the established pattern of framework devtools (React Developer Tools, Vue.js
+> devtools).

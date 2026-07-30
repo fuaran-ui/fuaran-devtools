@@ -1,0 +1,142 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>Quarterly review — Fuaran extension test page</title>
+    <style>
+      :root {
+        --paper: #efe9dc;
+        --loch: #1e4754;
+        --ink: #22333b;
+        --mist: #f7f4ec;
+      }
+      * {
+        box-sizing: border-box;
+        margin: 0;
+      }
+      body {
+        font-family: Georgia, 'Times New Roman', serif;
+        background: var(--paper);
+        color: var(--ink);
+        padding: 28px 32px;
+        min-height: 100vh;
+      }
+      .app-title {
+        font-style: italic;
+        color: var(--loch);
+        font-size: 30px;
+        letter-spacing: 0.01em;
+      }
+      .subtitle {
+        margin-top: 6px;
+        font-size: 14.5px;
+        opacity: 0.75;
+      }
+      .metrics {
+        display: flex;
+        gap: 16px;
+        margin-top: 24px;
+      }
+      .metric {
+        flex: 1;
+        background: var(--mist);
+        border: 1px solid rgba(30, 71, 84, 0.18);
+        border-radius: 10px;
+        padding: 16px 18px;
+      }
+      .metric .label {
+        font-size: 12.5px;
+        text-transform: uppercase;
+        letter-spacing: 0.09em;
+        color: var(--loch);
+        opacity: 0.8;
+      }
+      .metric .value {
+        margin-top: 8px;
+        font-size: 27px;
+        color: var(--loch);
+      }
+      .metric .delta {
+        margin-top: 4px;
+        font-size: 13px;
+        opacity: 0.7;
+      }
+      .detail {
+        margin-top: 26px;
+        background: var(--mist);
+        border: 1px solid rgba(30, 71, 84, 0.18);
+        border-radius: 10px;
+        padding: 20px 22px;
+        max-width: 640px;
+      }
+      .detail h2 {
+        color: var(--loch);
+        font-size: 19px;
+        font-style: italic;
+      }
+      .detail p {
+        margin-top: 10px;
+        font-size: 15px;
+        line-height: 1.55;
+      }
+      .actions {
+        margin-top: 16px;
+        display: flex;
+        gap: 10px;
+      }
+      button {
+        font: inherit;
+        font-size: 14px;
+        padding: 8px 18px;
+        border-radius: 8px;
+        border: 1px solid var(--loch);
+        background: var(--loch);
+        color: var(--paper);
+        cursor: pointer;
+      }
+      button.ghost {
+        background: transparent;
+        color: var(--loch);
+      }
+    </style>
+  </head>
+  <body data-fuaran-node-id="app">
+    <h1 class="app-title" data-fuaran-node-id="title">Quarterly review</h1>
+    <div class="subtitle" data-fuaran-node-id="subtitle">
+      Q2 2026 &middot; refreshed a moment ago
+    </div>
+
+    <div class="metrics" data-fuaran-node-id="metrics">
+      <div class="metric" data-fuaran-node-id="metric-revenue">
+        <div class="label">Revenue</div>
+        <div class="value">£48,200</div>
+        <div class="delta">+12% vs Q1</div>
+      </div>
+      <div class="metric" data-fuaran-node-id="metric-users">
+        <div class="label">Active users</div>
+        <div class="value">1,904</div>
+        <div class="delta">+9% vs Q1</div>
+      </div>
+      <div class="metric" data-fuaran-node-id="metric-latency">
+        <div class="label">P95 latency</div>
+        <div class="value">212 ms</div>
+        <div class="delta">−31 ms vs Q1</div>
+      </div>
+    </div>
+
+    <div class="detail" data-fuaran-node-id="detail">
+      <h2 data-fuaran-node-id="detail-title">Where the quarter moved</h2>
+      <p data-fuaran-node-id="detail-copy">
+        Revenue growth held through the pricing change, and the latency work landed: the P95 fell
+        below the 250&nbsp;ms target for the first time. Churn is flat &mdash; the retention
+        experiments start next sprint.
+      </p>
+      <div class="actions" data-fuaran-node-id="detail-actions">
+        <button data-fuaran-node-id="refresh-btn">Refresh figures</button>
+        <button class="ghost" data-fuaran-node-id="export-btn">Export</button>
+      </div>
+    </div>
+
+    <script src="host.js"></script>
+  </body>
+</html>
