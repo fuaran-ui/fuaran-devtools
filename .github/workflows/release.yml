@@ -1,0 +1,94 @@
+name: Release
+
+# Publication is a deliberate act: this workflow is reachable only from a
+# version tag, never from a branch push. A tag runs the same gate CI runs,
+# then attaches the built extension zip to a GitHub Release — the artefact for
+# load-unpacked users, sideloading, and the browser-store upload.
+#
+# The specification checkout is the same sibling shape CI uses, and here it is
+# load-bearing twice over: the conformance suite reads the corpus, and the
+# build copies the canonical wire schema into dist/. A missing schema is a
+# tolerable degraded build locally; in a release artefact it would ship a
+# panel that derives no fields, so this workflow asserts it made it in.
+
+on:
+  push:
+    tags: ['v*.*.*']
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: fuaran-devtools
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          path: fuaran-devtools
+
+      - uses: actions/checkout@v4
+        with:
+          repository: fuaran-ui/fuaran-ui-specification
+          path: wire-format-fixtures
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 9
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      # The tag names one version; package.json and the extension manifest must
+      # both agree with it. A zip whose manifest version differs from its tag is
+      # the drift a store reviewer or a bug report cannot untangle.
+      - name: Check version consistency
+        run: |
+          TAG_VERSION="${GITHUB_REF_NAME#v}"
+          PKG_VERSION="$(node -p "require('./package.json').version")"
+          MANIFEST_VERSION="$(node -p "require('./public/manifest.json').version")"
+          echo "tag=$TAG_VERSION package.json=$PKG_VERSION manifest.json=$MANIFEST_VERSION"
+          if [ "$TAG_VERSION" != "$PKG_VERSION" ] || [ "$TAG_VERSION" != "$MANIFEST_VERSION" ]; then
+            echo "Version mismatch: tag v$TAG_VERSION, package.json $PKG_VERSION, manifest.json $MANIFEST_VERSION"
+            exit 1
+          fi
+
+      - name: Install
+        run: pnpm install --no-frozen-lockfile
+
+      - name: Format check
+        run: pnpm format:check
+
+      - name: Typecheck
+        run: pnpm typecheck
+
+      - name: Test
+        run: pnpm test
+
+      - name: Build
+        run: pnpm build
+
+      - name: Assert the wire schema shipped
+        run: test -f dist/wire-schema.json
+
+      # The zip's root is dist/'s content — the manifest at the top level, which
+      # is what load-unpacked expects of a directory and what a browser store
+      # expects of an upload.
+      - name: Zip the extension
+        run: |
+          cd dist
+          zip -r "../fuaran-devtools-${GITHUB_REF_NAME}.zip" .
+
+      - name: Create GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "$GITHUB_REF_NAME" \
+            --repo "$GITHUB_REPOSITORY" \
+            --verify-tag \
+            --title "fuaran-devtools $GITHUB_REF_NAME" \
+            --notes "The built extension, zipped from \`dist/\`: unzip and load via chrome://extensions → Developer mode → Load unpacked, or upload as-is to a browser store. See the README for what the panel needs from a page." \
+            "fuaran-devtools-${GITHUB_REF_NAME}.zip"
