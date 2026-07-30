@@ -1,8 +1,14 @@
 {
   "manifest_version": 3,
   "name": "Fuaran DevTools",
-  "version": "0.1.0",
-  "description": "Inspect any Fuaran-rendered page at the typed-tree level: live tree view, click-to-select, and per-node binding and geometry detail.",
+  "version": "0.1.1",
+  "description": "Inspect and edit any Fuaran-rendered page at the typed-tree level: node kinds, bindings, geometry, and gated tree-op editing.",
+  "icons": {
+    "16": "icons/icon-16.png",
+    "32": "icons/icon-32.png",
+    "48": "icons/icon-48.png",
+    "128": "icons/icon-128.png"
+  },
   "devtools_page": "devtools.html",
   "background": {
     "service_worker": "background.js"

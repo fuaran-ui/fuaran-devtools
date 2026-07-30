@@ -1,6 +1,6 @@
 {
   "name": "fuaran-devtools",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "private": true,
   "description": "fuaran-devtools — a Manifest V3 browser extension that inspects any Fuaran-rendered page at the typed-tree level, over the relay@1.0 page/extension contract.",
   "license": "Apache-2.0",
