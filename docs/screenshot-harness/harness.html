@@ -1,0 +1,101 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>Fuaran DevTools — screenshot harness</title>
+    <style>
+      * {
+        box-sizing: border-box;
+        margin: 0;
+      }
+      html,
+      body {
+        height: 100%;
+        overflow: hidden;
+        font-family:
+          system-ui,
+          -apple-system,
+          'Segoe UI',
+          sans-serif;
+      }
+      .stage {
+        display: flex;
+        height: 100vh;
+      }
+      .page-side {
+        flex: 1 1 58%;
+        min-width: 0;
+      }
+      .devtools-side {
+        flex: 0 0 42%;
+        display: flex;
+        flex-direction: column;
+        border-left: 1px solid #c5c8cc;
+        background: #f1f3f4;
+      }
+      .devtools-tabs {
+        display: flex;
+        align-items: center;
+        gap: 2px;
+        padding: 0 8px;
+        height: 27px;
+        font-size: 12px;
+        color: #5f6368;
+        background: #f1f3f4;
+        border-bottom: 1px solid #d6d9dc;
+        user-select: none;
+      }
+      .devtools-tabs span {
+        padding: 5px 7px 4px;
+      }
+      .devtools-tabs .active {
+        color: #1a73e8;
+        border-bottom: 2px solid #1a73e8;
+      }
+      iframe {
+        border: 0;
+        width: 100%;
+        height: 100%;
+        display: block;
+      }
+      .panel-holder {
+        flex: 1;
+        min-height: 0;
+        background: #fff;
+      }
+    </style>
+  </head>
+  <body>
+    <script>
+      window.__fuaranShotBus = {
+        contentListener: null,
+        panelPorts: [],
+        toPanel(event) {
+          this.panelPorts.forEach((p) => p._deliver(event));
+        },
+      };
+    </script>
+    <div class="stage">
+      <div class="page-side">
+        <iframe id="page" src="page.html" title="Inspected page"></iframe>
+      </div>
+      <div class="devtools-side">
+        <div class="devtools-tabs">
+          <span>Elements</span><span>Console</span><span>Sources</span><span>Network</span
+          ><span class="active">Fuaran</span>
+        </div>
+        <div class="panel-holder" id="panel-holder"></div>
+      </div>
+    </div>
+    <script>
+      // The panel boots only after the page frame has registered its bridge
+      // listener — the same ordering the real extension gets for free.
+      document.getElementById('page').addEventListener('load', () => {
+        const frame = document.createElement('iframe');
+        frame.src = 'panel-frame.html';
+        frame.title = 'Fuaran panel';
+        document.getElementById('panel-holder').appendChild(frame);
+      });
+    </script>
+  </body>
+</html>
