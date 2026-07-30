@@ -6,3 +6,11 @@ coverage/
 .vscode/
 .idea/
 *.zip
+
+# npm --prefix installs for the docs tooling (see each dir's run notes) drop
+# their own manifests; the decompressed brand font is a generate.mjs artefact.
+docs/store-assets/package.json
+docs/store-assets/package-lock.json
+docs/store-assets/eb-garamond-italic.ttf
+docs/screenshot-harness/package.json
+docs/screenshot-harness/package-lock.json
