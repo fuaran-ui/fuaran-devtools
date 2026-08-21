@@ -33,6 +33,8 @@ import { loadWireSchema, WIRE_SCHEMA_FILE, type DerivedSchema } from './schemaSo
 import { downloadDocument, renderHistory } from './history.js';
 import { Trail } from '../trail/recorder.js';
 import { TRAIL_FILENAME } from '../trail/sessionLog.js';
+import { Dispatch, DEVTOOLS_ACTOR } from '../dispatch/dispatch.js';
+import { DEFAULT_ACTOR_CLASS, type ActorClass } from '../relay/protocol.js';
 
 const connection = new PanelConnection(chrome.devtools.inspectedWindow.tabId);
 
@@ -269,8 +271,12 @@ const renderCard = (node: NodeSnapshot): void => {
  * revision bookkeeping — and therefore the "was that change ours?" test the
  * trail's external-change posture rests on — has exactly one home.
  */
-const applyThroughRelay = async (op: TreeOpJson, reason: string): Promise<ApplyResult> => {
-  const result = await connection.request<ApplyResult>('apply', { op, reason });
+const applyThroughRelay = async (
+  op: TreeOpJson,
+  reason: string,
+  actorClass: ActorClass = DEFAULT_ACTOR_CLASS,
+): Promise<ApplyResult> => {
+  const result = await connection.request<ApplyResult>('apply', { op, reason, actorClass });
   // The post-op revision is recorded here so the `changed` event this very
   // edit causes is recognised as its own echo. Otherwise every edit re-reads
   // the tree twice: once because the panel knows it changed it, and again
@@ -279,19 +285,29 @@ const applyThroughRelay = async (op: TreeOpJson, reason: string): Promise<ApplyR
   return result;
 };
 
+/**
+ * The panel's write route, and the ONLY one.
+ *
+ * `Dispatch` owns the propose-then-record-on-confirmation rule, so the panel's
+ * own edits and a program's dispatches are the same call with a different
+ * actor — which is what makes "an agent's op goes through the identical path"
+ * a structural fact rather than a claim two code paths currently honour.
+ */
+const dispatch = new Dispatch(
+  { apply: (op, reason, actorClass) => applyThroughRelay(op, reason, actorClass) },
+  trail,
+);
+
 const editContext = (node: NodeSnapshot): EditContext => ({
   capabilities,
   derived,
   tree,
   node,
   held,
-  commit: async (op: TreeOpJson, reason: string) => {
-    const result = await applyThroughRelay(op, reason);
-    // Recorded only on a CONFIRMED apply. A refused op left the tree unchanged
-    // (§8.3), so putting it in the trail would state that it did something.
-    if (result.ok) await trail.record(op, reason, result.treeRevision);
-    return result;
-  },
+  // A person at this panel's keyboard. Recorded only on a CONFIRMED apply — a
+  // refused op left the tree unchanged (§8.3), so putting it in the trail would
+  // state that it did something — and that rule now lives in `Dispatch`.
+  commit: (op: TreeOpJson, reason: string) => dispatch.submit(DEVTOOLS_ACTOR, op, reason),
   reload: () => void refresh(),
   setHeld: (nodeId) => {
     held = nodeId;

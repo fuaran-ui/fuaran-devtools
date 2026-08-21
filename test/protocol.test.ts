@@ -1,8 +1,10 @@
 import { describe, expect, it } from 'vitest';
 
 import {
+  ACTOR_CLASSES,
   acceptsMessageEvent,
   capabilityFor,
+  isActorClass,
   isRelayEnvelope,
   isRequestType,
   looksLikeRelayMessage,
@@ -12,6 +14,7 @@ import {
   refusal,
   RELAY_PROFILE,
   request,
+  selectSessionProfile,
 } from '../src/relay/protocol.js';
 
 describe('profile grammar and negotiation (§5)', () => {
@@ -46,6 +49,64 @@ describe('profile grammar and negotiation (§5)', () => {
     // §1.3: the two profile names are distinct namespaces, so a peer that
     // confuses them negotiates Foreign and refuses — the correct outcome.
     expect(negotiate('core@1.0')).toBe('Foreign');
+  });
+});
+
+describe('session-profile selection (§6.3)', () => {
+  it('answers with the highest profile the client accepts and this peer serves', () => {
+    expect(selectSessionProfile(['relay@1.2', 'relay@1.1', 'relay@1.0'])).toBe('relay@1.2');
+    // Order in `accepts` is the client's PREFERENCE, not the decision: §6.3
+    // says highest, so a list in any order gives the same answer.
+    expect(selectSessionProfile(['relay@1.0', 'relay@1.2', 'relay@1.1'])).toBe('relay@1.2');
+  });
+
+  it('keeps serving a client that predates this peer — the regression', () => {
+    // The whole reason this is a selection and not `accepts.includes(own)`.
+    // Under the inclusion test a `relay@1.0` client got `FOREIGN_PROFILE` from
+    // any peer that had advanced, which is the entire population a backward-
+    // compatible minor bump exists to keep serving (§5.3). The two forms agreed
+    // while this peer was itself at 1.0 and stopped agreeing the moment it was
+    // not — so the bump is exactly what makes this test meaningful.
+    expect(selectSessionProfile(['relay@1.0'])).toBe('relay@1.0');
+    expect(selectSessionProfile(['relay@1.1', 'relay@1.0'])).toBe('relay@1.1');
+  });
+
+  it('will not answer above its own minor', () => {
+    // §5.1's superset rule runs one way only: a peer serves any minor at or
+    // below its own, and claiming one above would promise entry points it does
+    // not have.
+    expect(selectSessionProfile(['relay@1.9'], 'relay@1.2')).toBeUndefined();
+    expect(selectSessionProfile(['relay@1.9', 'relay@1.1'], 'relay@1.2')).toBe('relay@1.1');
+  });
+
+  it('has no answer for a foreign namespace, major, or malformed id', () => {
+    // Each of these is the `FOREIGN_PROFILE` case, and `undefined` is how the
+    // peer is told to raise it (§9.3).
+    expect(selectSessionProfile(['relay@2.0'])).toBeUndefined();
+    expect(selectSessionProfile(['relay@0.9'])).toBeUndefined();
+    expect(selectSessionProfile(['core@1.0'])).toBeUndefined();
+    expect(selectSessionProfile(['nonsense', 7, null])).toBeUndefined();
+    expect(selectSessionProfile([])).toBeUndefined();
+  });
+});
+
+describe('the actor class (§8.2.1)', () => {
+  it('is a closed two-value set matching the op-stream actor discriminator', () => {
+    expect([...ACTOR_CLASSES]).toEqual(['human', 'agent']);
+    expect(isActorClass('human')).toBe(true);
+    expect(isActorClass('agent')).toBe(true);
+    expect(isActorClass('assistant')).toBe(false);
+    expect(isActorClass(7)).toBe(false);
+  });
+
+  it('recognises read.affordances as a TYPE even though this peer serves none', () => {
+    // §10.1: an unrecognised type is `UNKNOWN_MESSAGE` ("no such entry point"),
+    // a recognised one whose capability was not advertised is
+    // `CAPABILITY_ABSENT` ("it exists, this peer does not offer it"). A peer
+    // declaring 1.2 owes the second answer, and it can only give it if the
+    // token is in the set.
+    expect(isRequestType('read.affordances')).toBe(true);
+    expect(capabilityFor('read.affordances')).toBe('read.affordances');
   });
 });
 

@@ -92,14 +92,37 @@ export type OpResult =
 export const SUCCESS: OpResult = { kind: 'success' };
 
 /**
- * The actor every op this extension applies is attributed to.
+ * The actor an op composed IN THE PANEL is attributed to — a person, at this
+ * extension's keyboard.
  *
  * Distinct from the relay's `attribution.actor` string (`"fuaran-devtools"`),
  * which is free-form advisory metadata for the HOST's audit trail and grants
  * nothing (DEVTOOLS_RELAY §8.2). This one is the op-stream `Actor` folded into
  * the chain hash, and it is the identity the exported trail attests to.
+ *
+ * It is no longer the ONLY actor the trail records — see `agentActor` — which
+ * is why `Trail.record` now takes one rather than assuming this one. Its value
+ * is unchanged, so a panel-authored recording hashes exactly as it did before.
  */
 export const DEVTOOLS_ACTOR: Actor = { kind: 'human', id: 'devtools' };
+
+/**
+ * A program that dispatched an op through this extension.
+ *
+ * `Actor['kind']` is the same two-value discriminator the relay's
+ * `attribution.actorClass` carries (§8.2.1), and that is deliberate on both
+ * sides: the wire field was chosen to match this record so a relay-originated
+ * op joins a recording without a translation table. The distinction the CLASS
+ * cannot make — which program, which channel — is what `id` is for, so an
+ * externally-hosted agent and an integrated assistant are separable in an
+ * export while the class stays the coarse, portable fact.
+ */
+export const agentActor = (model: string, version: string, id: string): Actor => ({
+  kind: 'agent',
+  model,
+  version,
+  id,
+});
 
 /**
  * The actor's wire encoding — INSERTION-ordered, not ordinal-sorted.

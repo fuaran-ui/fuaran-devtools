@@ -8,7 +8,7 @@
 //
 //  ── What the panel can and cannot know ─────────────────────────────────────
 //
-//  `relay@1.0` has no read that returns a node's property VALUES. Its reads
+//  `relay@1.2` has no read that returns a node's property VALUES. Its reads
 //  answer what is in the tree structurally — kind, bound slots, child ids,
 //  geometry — and one slot's resolved value at a time. So the property editor
 //  is a SET surface, not a read-modify-write one: each field commits the value
@@ -262,7 +262,7 @@ const PLACEMENTS: readonly {
 /**
  * The kinds offerable at a target, and why the gate is where it is.
  *
- * `relay@1.0` has NO dry-run: `apply` applies. So a candidate cannot be tried
+ * `relay@1.2` has NO dry-run: `apply` applies. So a candidate cannot be tried
  * before it is offered, and the palette is OPTIMISTIC by necessity — it offers
  * what it can construct and what the schema does not rule out, and lets the
  * host's own gate have the last word.

@@ -10,7 +10,7 @@
 
 import { describe, expect, it } from 'vitest';
 
-import type { TreeSnapshot } from '../src/relay/protocol.js';
+import { RELAY_PROFILE, type TreeSnapshot } from '../src/relay/protocol.js';
 import {
   batch,
   insertChild,
@@ -88,7 +88,7 @@ describe('UpdateProp', () => {
     // be a fabrication: nothing in relay@1.0 returns a property value.
     const reason = expectRefused(inverseOf(updateProp('a', 'Text', 'x'), tree(), []));
     expect(reason).toContain('never');
-    expect(reason).toContain('relay@1.0');
+    expect(reason).toContain(RELAY_PROFILE);
   });
 
   it('refuses a nested path even when an insert is in the trail', () => {

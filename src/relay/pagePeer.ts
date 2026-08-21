@@ -1,5 +1,5 @@
 // ============================================================================
-//  relay/pagePeer — the `relay@1.0` PAGE PEER, over a host's in-page surface.
+//  relay/pagePeer — the `relay@1.2` PAGE PEER, over a host's in-page surface.
 //
 //  This is the half of the relay that runs in the inspected page's own JS
 //  world (`src/page-relay.ts` installs it). It answers relay requests by
@@ -39,6 +39,7 @@ import {
   ok,
   refusal,
   RELAY_PROFILE,
+  selectSessionProfile,
   type BindingInfo,
   type Capability,
   type RefusalClass,
@@ -386,6 +387,12 @@ const treeRevision = (surface: HostSurface): string => {
  */
 export const capabilitiesOf = (surface: HostSurface): Capability[] => {
   const advertised: Capability[] = [];
+  // `read.affordances` (§7.6) is deliberately absent and has no branch here:
+  // affordances are DECLARED, not derived, and this peer relays a host surface
+  // that carries no declaration source. §6.4 makes that fully conformant — a
+  // peer advertises what it will serve, and a request for it is
+  // `CAPABILITY_ABSENT` rather than `UNKNOWN_MESSAGE`, which is the whole
+  // reason the type is in `REQUEST_TYPES`.
   if (typeof surface.getNodeState === 'function') advertised.push('read.nodeState');
   if (typeof surface.getBindingValue === 'function') advertised.push('read.bindingValue');
   if (typeof surface.getRenderedDom === 'function') advertised.push('read.renderedDom');
@@ -469,7 +476,14 @@ export const createPagePeer = (
           return deny('MALFORMED_MESSAGE', 'hello requires a non-empty `accepts` array.', {
             path: 'payload.accepts',
           });
-        if (!accepts.includes(RELAY_PROFILE))
+        // §6.3: the HIGHEST profile the client accepts and this peer can serve
+        // — not merely "is my own id in the list". The two agreed while this
+        // peer was at `relay@1.0` (nothing is below the lowest minor) and stop
+        // agreeing the moment it advances: an inclusion test would refuse every
+        // client still asking for 1.0, which is the population the bump was
+        // backward-compatible FOR.
+        const session = selectSessionProfile(accepts);
+        if (session === undefined)
           return deny('FOREIGN_PROFILE', 'This peer speaks no profile the client accepts.', {
             received: accepts.join(', '),
             supported: [RELAY_PROFILE],
@@ -478,7 +492,7 @@ export const createPagePeer = (
           host: identity.host,
           hostVersion: identity.hostVersion,
           surfaceVersion: live.version ?? 'unknown',
-          profile: RELAY_PROFILE,
+          profile: session,
           capabilities: capabilitiesOf(live),
           treeRevision: treeRevision(live),
         });
@@ -490,6 +504,16 @@ export const createPagePeer = (
           return deny('NODE_NOT_FOUND', 'The host surface returned no tree snapshot.');
         return ok(id, type, tree);
       }
+
+      // §7.6 — recognised at this peer's profile, never advertised, and so
+      // never reached: the capability check above refuses it first. Kept as a
+      // real branch rather than a fallthrough so the switch stays total over
+      // `RequestType` and the refusal stays honest if the check is ever
+      // reordered — `CAPABILITY_ABSENT`, not a claim that the type is unknown.
+      case 'read.affordances':
+        return deny('CAPABILITY_ABSENT', "This peer does not offer 'read.affordances'.", {
+          capability: 'read.affordances',
+        });
 
       case 'read.nodeState': {
         const nodeId = str(payload, 'nodeId');
@@ -603,6 +627,14 @@ export const createPagePeer = (
         // nothing, grants nothing, and is not read here at all. The host's own
         // audit trail is the host's business; a peer that let it influence the
         // decision below would have turned advisory metadata into authority.
+        //
+        // `attribution.actorClass` (§8.2.1) is read here for NOTHING, and that
+        // is the point rather than an omission. An `agent` op and a `human` op
+        // carrying the same payload reach `live.apply` identically and receive
+        // the same outcome including the same refusal class (§8.2.1 rule 2), so
+        // the property is structural — there is no branch that could drift.
+        // An unrecognised class reaches no branch either, which satisfies rule
+        // 3's "carried, not corrected" for a peer that carries it nowhere.
         const outcome = adaptApplyEnvelope(live.apply?.(op));
         if (outcome.kind === 'applied')
           return ok(id, type, {

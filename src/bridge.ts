@@ -1,7 +1,7 @@
 // ============================================================================
 //  bridge — the extension-private panel ↔ content-script protocol.
 //
-//  DELIBERATELY NOT THE RELAY. The relay contract (`relay@1.0`) governs the
+//  DELIBERATELY NOT THE RELAY. The relay contract (`relay@1.2`) governs the
 //  page ↔ extension boundary and has a closed message set; carrying the
 //  panel's own concerns — highlight, pick, detection status — over it would
 //  make every one of them an `UNKNOWN_MESSAGE`, and would quietly turn a

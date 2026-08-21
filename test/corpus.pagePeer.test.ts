@@ -17,7 +17,7 @@
 import { describe, expect, it } from 'vitest';
 
 import { createPagePeer, type HostSurface } from '../src/relay/pagePeer.js';
-import type { RelayEnvelope } from '../src/relay/protocol.js';
+import { RELAY_PROFILE, type RelayEnvelope } from '../src/relay/protocol.js';
 import { readFixture, readManifest } from './support/corpus.js';
 import { describeMismatches, shapeMismatches } from './support/shape.js';
 import { applyHost, applyHostWith, bareHost, taggedHost } from './support/fakeHost.js';
@@ -108,6 +108,12 @@ describe('relay@1.0 corpus — page peer', () => {
 
       // §4.1 — the id is echoed verbatim, refusals included.
       expect(actual.id).toBe(request['id']);
+      // §4 — `$relay` is the SENDER's own profile id, so it is asserted against
+      // this peer's id and not the fixture's. The corpus is written at
+      // `relay@1.0` and this peer answers at `relay@1.2`; both are correct, and
+      // a runner pinning the fixture's value would be testing the fixture
+      // author's version rather than this implementation's conformance.
+      expect(actual.$relay).toBe(RELAY_PROFILE);
       // §4.2 — `<type>.ok` or `refusal`; there is no third outcome.
       expect(actual.type).toBe(expected['type']);
       if (fixture.kind === 'relay-refusal') {

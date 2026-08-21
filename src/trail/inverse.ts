@@ -28,7 +28,7 @@
 //    UpdateProp        recoverable ONLY if this session already knows what was
 //                      there — an earlier recorded edit to the same node and
 //                      path, or the value the node was INSERTED with. Otherwise
-//                      not: `relay@1.0` cannot read a property value, so the
+//                      not: `relay@1.2` cannot read a property value, so the
 //                      value before this session's first edit was never
 //                      knowable and inventing one would be a fabrication.
 //    InsertChild       always — the panel minted the child, so its id is known.
@@ -166,7 +166,7 @@ export const inverseOf = (
       if (!prior.known)
         return unavailable(
           `What '${target}.${path}' held before this session's first edit to it was never ` +
-            'readable — relay@1.0 has no read of a property value — so it cannot be restored.',
+            'readable — relay@1.2 has no read of a property value — so it cannot be restored.',
         );
       return { ok: true, op: updateProp(target, path, prior.value) };
     }
@@ -180,7 +180,7 @@ export const inverseOf = (
 
     case 'RemoveNode':
       return unavailable(
-        'A removed subtree cannot be restored: relay@1.0 never let this panel read it as wire ' +
+        'A removed subtree cannot be restored: relay@1.2 never let this panel read it as wire ' +
           'JSON, and re-inserting a structural husk would put back something the page never had.',
       );
 

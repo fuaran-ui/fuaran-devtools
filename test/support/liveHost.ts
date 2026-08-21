@@ -157,12 +157,32 @@ export interface LiveHost {
   mutate(op: Record<string, unknown>): void;
   /** Refuse the next apply at the policy gate, whatever it is. */
   denyNext(): void;
+  /** How many ops the policy gate has been asked about. */
+  policyCalls(): number;
 }
 
-export const liveHost = (initial: LiveNode, options: { canApply?: boolean } = {}): LiveHost => {
+/**
+ * A STANDING policy predicate, in addition to the one-shot `denyNext`.
+ *
+ * A real host's gate is a rule about the op, not a switch: it refuses a write
+ * to a field the application never declared controllable, and refuses anything
+ * addressing a reserved module outright. `denyNext` cannot express either,
+ * because it refuses whatever arrives next regardless of what it is — which is
+ * exactly the wrong shape for asserting that an agent's op and a person's op
+ * are judged by the same rule.
+ *
+ * Returning a string denies with it as the reason; `undefined` permits.
+ */
+export type LivePolicy = (op: Record<string, unknown>) => string | undefined;
+
+export const liveHost = (
+  initial: LiveNode,
+  options: { canApply?: boolean; policy?: LivePolicy } = {},
+): LiveHost => {
   let tree = initial;
   let revision = 0;
   let deny = false;
+  let policyCalls = 0;
   const listeners = new Set<(change: unknown) => void>();
 
   const commit = (next: LiveNode, cause: 'apply' | 'host'): void => {
@@ -211,6 +231,14 @@ export const liveHost = (initial: LiveNode, options: { canApply?: boolean } = {}
         deny = false;
         return { ok: false, status: 'denied', denied: true, error: 'Denied by the policy gate.' };
       }
+      policyCalls += 1;
+      // The standing rule sees the OP and nothing else. It is handed no
+      // attribution, no actor and no class — which is not a simplification of a
+      // real gate but a statement of the contract: §8.2.1 rule 2 forbids the
+      // decision from varying on who proposed the op, so a gate that COULD see
+      // the class would be modelling a host that is entitled to be wrong.
+      const denial = options.policy?.(json);
+      if (denial !== undefined) return { ok: false, status: 'denied', denied: true, error: denial };
       if (!KNOWN_OPS.has(String(json['$type'])))
         return {
           ok: false,
@@ -241,6 +269,7 @@ export const liveHost = (initial: LiveNode, options: { canApply?: boolean } = {}
         throw new Error(`the test's own mutation failed: ${failure.message}`);
       commit(candidate, 'host');
     },
+    policyCalls: () => policyCalls,
     denyNext: () => {
       deny = true;
     },

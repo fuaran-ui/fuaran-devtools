@@ -170,25 +170,41 @@ export class Trail {
   }
 
   /**
-   * Record one op the host CONFIRMED it applied.
+   * Record one op the host CONFIRMED it applied, attributed to `actor`.
    *
    * The redo tail is truncated first, so the chain is taken against the op that
    * genuinely precedes this one rather than against an op that was undone.
+   *
+   * `actor` defaults to the panel's own human identity, so every existing
+   * caller records exactly what it recorded before — byte-identically, since
+   * the actor is folded into the chain pre-image and an unchanged actor leaves
+   * every hash where it was. A program dispatching through `Dispatch` passes
+   * its own, and the resulting entry is distinguishable in the export by the
+   * one field that cannot be re-attributed without moving every hash after it.
    */
-  async record(op: TreeOpJson, reason: string, revision?: string): Promise<void> {
+  async record(
+    op: TreeOpJson,
+    reason: string,
+    revision?: string,
+    actor: Actor = DEVTOOLS_ACTOR,
+  ): Promise<boolean> {
     const tree = this.latest;
-    if (tree === undefined) return;
+    // No tree has been read, so there is nothing to record AGAINST: an entry
+    // here would carry no `treeBefore` and could never be inverted. Reported
+    // rather than silently swallowed, because a dispatching caller whose op the
+    // host applied is entitled to know the trail did not keep it.
+    if (tree === undefined) return false;
 
     this.log = this.log.slice(0, this.cursor);
     const previous = this.log[this.log.length - 1];
     const prevHash = previous?.hash ?? GENESIS_PREVIOUS_HASH;
     const seq = this.cursor + 1;
     const opJson = canonicalJson(op as unknown as JsonValue);
-    const hash = await computeHashOf(prevHash, op as unknown as JsonValue, seq, DEVTOOLS_ACTOR);
+    const hash = await computeHashOf(prevHash, op as unknown as JsonValue, seq, actor);
 
     this.log.push({
       seq,
-      actor: DEVTOOLS_ACTOR,
+      actor,
       prevHash,
       hash,
       opJson,
@@ -198,6 +214,7 @@ export class Trail {
     });
     this.cursor = this.log.length;
     if (revision !== undefined) this.endRevision = revision;
+    return true;
   }
 
   /** The compensating op for the last applied entry, or why there is none. */

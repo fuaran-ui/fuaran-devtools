@@ -10,7 +10,7 @@
 //  What it exposes is EXACTLY what the page already exposed. `window.__fuaran`
 //  is registered by the host itself, only in a debug build, and is already
 //  reachable by any script on the page — including the browser console, which
-//  is what it was built for. The peer wraps it in the `relay@1.0` envelope so
+//  is what it was built for. The peer wraps it in the `relay@1.2` envelope so
 //  a structured client can use it; it adds no entry point the page did not
 //  already have. That now includes the host's own policy-gated `apply` and its
 //  change subscription, which are surface methods like any other (§11.3).

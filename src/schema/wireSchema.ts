@@ -6,7 +6,7 @@
 //  The relay's read set (§7) answers "what is in this tree": a node's kind, its
 //  BOUND binding slots, its child ids, one slot's resolved value, geometry, and
 //  a kind lookup. It deliberately answers nothing about what a kind COULD hold
-//  — there is no `read.kindSchema` in `relay@1.0` — so an editor that waited
+//  — there is no `read.kindSchema` in `relay@1.2` — so an editor that waited
 //  for the host to describe its own vocabulary would wait forever.
 //
 //  The description exists, and it is not a host's: `schema.json` in the wire
@@ -302,7 +302,7 @@ export const classify = (
  * Only TOP-LEVEL properties are derived. The schema also describes indexed
  * paths inside collection-valued fields (a grid column's label, say), and the
  * op grammar addresses them — but expanding `[i]` needs the collection's
- * CURRENT LENGTH, and `relay@1.0` serves no read that reports it. Deriving
+ * CURRENT LENGTH, and `relay@1.2` serves no read that reports it. Deriving
  * them anyway would offer rows addressing indices that may not exist, which is
  * worse than not offering them: the refusal would arrive after the edit rather
  * than instead of it.

@@ -67,7 +67,7 @@ that is not there.
 
 ## How it works
 
-The extension speaks the **`relay@1.0`** page↔extension contract, specified in
+The extension speaks the **`relay@1.2`** page↔extension contract, specified in
 [`DEVTOOLS_RELAY.md`](https://github.com/fuaran-ui/fuaran-ui-specification) alongside the Fuaran UI
 wire format. Four pieces:
 
@@ -87,6 +87,33 @@ isolated world, so the privileged surface stays as small as it can be.
 
 Relay traffic never leaves the tab. What crosses to the panel is already-shaped result data on a
 separate, extension-private envelope; the relay contract governs the page boundary and nothing else.
+
+### Who changed this — human edits and dispatched edits
+
+An edit can be composed by a person at the panel or by a program running inside the extension, and
+the recording says which. The relay carries the distinction as `attribution.actorClass` — `human` or
+`agent`, the two values the op-stream's own actor record already uses — and the exported trail
+carries it as the op's `actor`, folded into the chain hash so a later relabelling moves every hash
+after it.
+
+Three things about it are deliberate, and the first two are the ones worth reading twice:
+
+- **It changes no decision.** A dispatched op goes through the identical path a panel edit does: the
+  same `apply`, the same host decode → validate → policy sequence, the same refusal classes. A write
+  to a field the page never declared controllable is refused for a program exactly as it is for a
+  person — same class, same message. The class is a label on the record, never an input to the gate,
+  which is what stops it being worth forging.
+- **A refusal is readable, its reasoning is not.** The dispatching caller gets the machine-readable
+  class — `POLICY_DENIED` and `VALIDATOR_REJECT` mean different things and are never conflated — and
+  deliberately does not get the host's account of _why_ policy refused. An explanation of a policy is
+  a map of the policy.
+- **`src/dispatch/` has no externally-reachable entry point.** A dispatching program is one running
+  inside this extension. There is no `externally_connectable` origin and no listener a page or
+  another extension can reach; opening that door is a security decision, not a convenience.
+
+A recording made before this existed stays correct: an absent `actorClass` means `human`, so the
+extension omits the field entirely for a panel edit and a human-authored envelope is byte-identical
+to the one earlier builds sent.
 
 ### Placement is addressed by id, never by index
 
@@ -155,7 +182,7 @@ carries a different marker, `fuaran-devtools-op-trail`, and the reason is worth 
 
 A session op log's central claim is that **its ops build its tree**: it carries a base tree, the ops,
 and the final tree, and a reader checks the claim by replaying them. This extension can honour every
-part of that except the two trees, because `relay@1.0` has no read that returns a node's canonical
+part of that except the two trees, because `relay@1.2` has no read that returns a node's canonical
 wire JSON. Its reads answer what the tree is structurally; none returns the wire form of a node, and
 `treeRevision` is specified as an opaque token a client must not parse. Without a base tree there is
 also no base hash, so the chain is seeded at the genesis hash instead.
@@ -171,7 +198,7 @@ So the document says so, in the document:
   "ops": [{ "seq": 1, "actor": { "kind": "human", "id": "devtools" }, "prevHash": "…", "hash": "…", "op": { … } }],
   "tree": null,
   "integrity": { "base": "absent", "tree": "absent", "chainSeed": "genesis", "reason": "…" },
-  "session": { "host": "…", "profile": "relay@1.0", "startedAt": "…", "startRevision": "…", … },
+  "session": { "host": "…", "profile": "relay@1.2", "startedAt": "…", "startRevision": "…", … },
   "structure": { "shape": "…", "base": { … }, "final": { … } }
 }
 ```

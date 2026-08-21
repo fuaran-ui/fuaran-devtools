@@ -1,7 +1,13 @@
 import { describe, expect, it, vi } from 'vitest';
 
 import { RelayClient, windowTransport, type RelayTransport } from '../src/relay/client.js';
-import { ok, refusal, RELAY_PROFILE, type RelayEnvelope } from '../src/relay/protocol.js';
+import {
+  ACCEPTED_PROFILES,
+  ok,
+  refusal,
+  RELAY_PROFILE,
+  type RelayEnvelope,
+} from '../src/relay/protocol.js';
 
 const harness = (reply?: (envelope: RelayEnvelope) => RelayEnvelope | undefined) => {
   const sent: RelayEnvelope[] = [];
@@ -45,7 +51,12 @@ describe('request shape (§6.2)', () => {
 
     expect(sent).toHaveLength(2);
     expect(sent[0]?.$relay).toBe(RELAY_PROFILE);
-    expect(sent[0]?.payload['accepts']).toEqual([RELAY_PROFILE]);
+    // §6.2 "most-preferred first", and every minor this build speaks — not
+    // only its newest. A client offering one id would be `FOREIGN_PROFILE`d by
+    // every peer that has not advanced to it, which is the population a
+    // backward-compatible minor bump exists to keep serving (§5.3, §6.3).
+    expect(sent[0]?.payload['accepts']).toEqual([...ACCEPTED_PROFILES]);
+    expect((sent[0]?.payload['accepts'] as string[])[0]).toBe(RELAY_PROFILE);
     expect(sent[0]?.id).not.toBe(sent[1]?.id);
     // §7.2: `read.tree` takes an empty payload — never absent, never a bare
     // value; a type with no data carries `{}` (§4).

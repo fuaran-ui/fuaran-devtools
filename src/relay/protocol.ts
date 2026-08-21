@@ -1,8 +1,8 @@
 // ============================================================================
-//  relay/protocol — the `relay@1.0` envelope, its closed sets, and its guards.
+//  relay/protocol — the `relay@1.2` envelope, its closed sets, and its guards.
 //
 //  This module is a direct, dependency-free transcription of the normative
-//  DevTools relay contract (`DEVTOOLS_RELAY.md`, profile `relay@1.0`). It is
+//  DevTools relay contract (`DEVTOOLS_RELAY.md`, profile `relay@1.2`). It is
 //  deliberately written FROM THE SPEC and imports nothing from any host — the
 //  contract's own §1.2 posture is that "a relay implementation is written from
 //  this document; it does not need to read any host's source".
@@ -12,8 +12,28 @@
 //  running in the content script).
 // ============================================================================
 
-/** The relay profile this implementation speaks (DEVTOOLS_RELAY §5.1). */
-export const RELAY_PROFILE = 'relay@1.0';
+/**
+ * The relay profile this implementation speaks (DEVTOOLS_RELAY §5.1) — "the
+ * HIGHEST profile it can serve", not the only one.
+ *
+ * This is `relay@1.2` because this build uses `attribution.actorClass` (§8.2.1),
+ * and a peer that uses a minor's vocabulary while declaring an earlier minor is
+ * misdescribing itself. §5.1's superset rule is what makes the claim honest in
+ * the other direction: a 1.2 peer serves any minor at or below its own, which
+ * `selectSessionProfile` below turns into a per-session decision.
+ */
+export const RELAY_PROFILE = 'relay@1.2';
+
+/**
+ * The profiles this build speaks, most-preferred first — the `accepts` array of
+ * a `hello` request (§6.2), and the set `selectSessionProfile` chooses from.
+ *
+ * Listing the earlier minors is not politeness. A client that sent only its own
+ * newest id would be refused by every peer that has not yet advanced, which is
+ * exactly the population §5.3's backward-compatible minor bump exists to keep
+ * serving.
+ */
+export const ACCEPTED_PROFILES = ['relay@1.2', 'relay@1.1', 'relay@1.0'] as const;
 
 /** The envelope field whose presence marks a message as relay traffic (§3.2, §4). */
 export const RELAY_FIELD = '$relay';
@@ -21,7 +41,17 @@ export const RELAY_FIELD = '$relay';
 /** Envelope direction (§4). */
 export type RelayDirection = 'request' | 'response' | 'event';
 
-/** The closed set of request types (§4.2). */
+/**
+ * The closed set of request types (§4.2), at THIS peer's profile.
+ *
+ * `read.affordances` is here because §4.2 puts it in the `relay@1.1` set and
+ * this peer declares 1.2 — recognising it is not the same as serving it. §10.1
+ * is explicit that the two refusals say different things: an unrecognised type
+ * is `UNKNOWN_MESSAGE` ("no such entry point"), a recognised one whose
+ * capability was not advertised is `CAPABILITY_ABSENT` ("it exists, this peer
+ * does not offer it"). Omitting the token here would make a 1.2 peer tell a
+ * client the first when the truth is the second.
+ */
 export const REQUEST_TYPES = [
   'hello',
   'read.nodeState',
@@ -29,6 +59,7 @@ export const REQUEST_TYPES = [
   'read.renderedDom',
   'read.tree',
   'read.findNodes',
+  'read.affordances',
   'apply',
   'subscribe',
   'unsubscribe',
@@ -163,14 +194,51 @@ export interface ApplyOk {
 }
 
 /**
+ * Whether a person or a program composed an edit (§8.2.1, since `relay@1.2`).
+ *
+ * Deliberately two values, matching the discriminator the op-stream's own actor
+ * record uses (`{"kind":"human",…}` / `{"kind":"agent",…}`), so a relay-
+ * originated op joins a recording with no translation table. WHICH program is a
+ * question for `actor`, which is free-form for exactly that reason.
+ */
+export const ACTOR_CLASSES = ['human', 'agent'] as const;
+
+export type ActorClass = (typeof ACTOR_CLASSES)[number];
+
+/** §8.2.1 rule 1: absent means `human` — what every pre-1.2 client meant. */
+export const DEFAULT_ACTOR_CLASS: ActorClass = 'human';
+
+/**
  * Advisory metadata recorded against a mutation (§8.2). It grants nothing: a
  * host MUST NOT let it influence any of the §8.3 decisions, so this is
- * provenance for the host's audit trail and nothing else.
+ * provenance for the host's audit trail and nothing else. `actorClass` is
+ * advisory to exactly the same degree (§8.2.1 rule 2) — a self-description, not
+ * an authentication of one.
  */
 export interface Attribution {
   readonly actor?: string;
+  readonly actorClass?: ActorClass | string;
   readonly reason?: string;
 }
+
+export const isActorClass = (value: unknown): value is ActorClass =>
+  typeof value === 'string' && (ACTOR_CLASSES as readonly string[]).includes(value);
+
+/**
+ * The class an attribution states, as a RECEIVING peer must read it (§8.2.1).
+ *
+ * Two absences that look alike and are not: a MISSING `actorClass` is `human`
+ * by rule 1, because that is what the client meant; an UNRECOGNISED one is
+ * carried back verbatim by rule 3, because relabelling it `human` would put a
+ * claim into a record that nothing on the wire made. A non-string value is
+ * ignored rather than refused (§10.2) — advisory metadata must not be able to
+ * fail a legal edit.
+ */
+export const actorClassOf = (attribution: Attribution | undefined): ActorClass | string => {
+  const declared = attribution?.actorClass;
+  if (declared === undefined || typeof declared !== 'string') return DEFAULT_ACTOR_CLASS;
+  return declared;
+};
 
 /** `subscribe.ok` payload (§8.5). `events` echoes the subset ESTABLISHED. */
 export interface SubscribeOk {
@@ -231,6 +299,40 @@ export const negotiate = (received: string, own: string = RELAY_PROFILE): Negoti
   if (theirs === undefined || ours === undefined) return 'Foreign';
   if (theirs.name !== ours.name || theirs.major !== ours.major) return 'Foreign';
   return theirs.minor <= ours.minor ? 'Current' : 'Behind';
+};
+
+/**
+ * The session profile a page peer answers `hello` with (§6.3): the HIGHEST
+ * profile that is both listed in the client's `accepts` and serveable by this
+ * peer — same name, same major, minor at or below its own. `undefined` when
+ * there is none, which is the one case that refuses with `FOREIGN_PROFILE`.
+ *
+ * Answering only with the peer's OWN id would be wrong in a way that looks
+ * harmless: it refuses every client whose `accepts` predates the peer's newest
+ * minor, which is the entire population a backward-compatible bump exists to
+ * keep serving. §5.3 says additive change is a minor bump BECAUSE an older peer
+ * can ignore what a newer one adds; the same reasoning obliges a newer peer to
+ * keep speaking to an older client. That is why this is a selection and not an
+ * inclusion test — a shape this peer held until it first advanced past 1.0, at
+ * which point the two stop agreeing.
+ */
+export const selectSessionProfile = (
+  accepts: readonly unknown[],
+  own: string = RELAY_PROFILE,
+): string | undefined => {
+  const ours = parseProfile(own);
+  if (ours === undefined) return undefined;
+  let best: { readonly id: string; readonly minor: number } | undefined;
+  for (const candidate of accepts) {
+    if (typeof candidate !== 'string') continue;
+    const parsed = parseProfile(candidate);
+    if (parsed === undefined) continue;
+    if (parsed.name !== ours.name || parsed.major !== ours.major) continue;
+    if (parsed.minor > ours.minor) continue;
+    if (best === undefined || parsed.minor > best.minor)
+      best = { id: candidate, minor: parsed.minor };
+  }
+  return best?.id;
 };
 
 // ─── Guards ─────────────────────────────────────────────────────────

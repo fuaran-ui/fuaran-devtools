@@ -1,5 +1,5 @@
 // ============================================================================
-//  relay/client — the `relay@1.0` CLIENT PEER.
+//  relay/client — the `relay@1.2` CLIENT PEER.
 //
 //  Issues requests and correlates responses. Runs in the extension's content
 //  script, which shares the page's `window` for `postMessage` purposes while
@@ -14,12 +14,12 @@
 // ============================================================================
 
 import {
+  ACCEPTED_PROFILES,
   acceptsMessageEvent,
   capabilityFor,
   isRelayEnvelope,
   KNOWN_EVENTS,
   negotiate,
-  RELAY_PROFILE,
   request,
   type ApplyOk,
   type Attribution,
@@ -242,7 +242,11 @@ export class RelayClient {
       {
         client: this.options.client,
         clientVersion: this.options.clientVersion,
-        accepts: [RELAY_PROFILE],
+        // §6.2: "most-preferred first". Every minor this build speaks, not only
+        // its newest — a peer selects the highest it can serve (§6.3), and a
+        // client offering one id would be `FOREIGN_PROFILE`d by every peer that
+        // has not caught up. The peer's chosen id comes back as `profile`.
+        accepts: [...ACCEPTED_PROFILES],
       },
       (payload) => {
         const capabilities = payload['capabilities'];

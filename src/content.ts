@@ -11,7 +11,7 @@
 //      This route needs no `scripting` permission and no host permission,
 //      which is why it is preferred over `chrome.scripting.executeScript`:
 //      the extension asks for strictly less than the alternative.
-//   3. SPEAK THE RELAY. This script is the `relay@1.0` CLIENT peer. Relay
+//   3. SPEAK THE RELAY. This script is the `relay@1.2` CLIENT peer. Relay
 //      traffic never leaves the tab (DEVTOOLS_RELAY §1.2); what crosses to the
 //      panel is already-shaped result data on the extension-private bridge.
 //   4. OVERLAY + PICK. Both are pure DOM work, so they live here rather than
@@ -36,6 +36,7 @@ import { hideHighlight, showHighlight } from './inspect/overlay.js';
 import { startPicking } from './inspect/picker.js';
 import { RelayClient, windowTransport, type RelayFailure } from './relay/client.js';
 import { EXTENSION_PEER_HOST } from './relay/pagePeer.js';
+import { DEFAULT_ACTOR_CLASS } from './relay/protocol.js';
 
 const CLIENT_NAME = 'fuaran-devtools';
 const CLIENT_VERSION = '0.1.0';
@@ -170,7 +171,7 @@ const requireObject = (request: BridgeRequest, key: string): Readonly<Record<str
  */
 const applyOp = async (
   op: Readonly<Record<string, unknown>>,
-  attribution: { readonly actor: string; readonly reason?: string },
+  attribution: { readonly actor: string; readonly actorClass?: string; readonly reason?: string },
 ): Promise<ApplyResult> => {
   const result = await relayClient().apply(op, attribution);
   if (result.ok) return { ok: true, treeRevision: result.value.treeRevision };
@@ -239,16 +240,26 @@ const handle = async (request: BridgeRequest): Promise<unknown> => {
       );
     case 'readRenderedDom':
       return unwrap(relayClient().readRenderedDom(requireString(request, 'nodeId')));
-    case 'apply':
+    case 'apply': {
+      // §8.2.1 rule 1: absence already says `human`, so the default class is
+      // OMITTED rather than spelled out. That keeps a panel-authored envelope
+      // byte-identical to the one this client sent before the field existed,
+      // and keeps the wire clean for the peers that will never know the field:
+      // the only request that carries it is one where it says something.
+      const declared = request.args?.['actorClass'];
+      const actorClass =
+        typeof declared === 'string' && declared !== DEFAULT_ACTOR_CLASS ? declared : undefined;
       return applyOp(requireObject(request, 'op'), {
         actor: CLIENT_NAME,
         // Advisory only (§8.2). It is provenance for the host's audit trail —
         // it buys this client nothing and must not.
+        ...(actorClass === undefined ? {} : { actorClass }),
         reason:
           typeof request.args?.['reason'] === 'string'
             ? (request.args['reason'] as string)
             : 'edited from the inspector',
       });
+    }
     case 'watch':
       return watch();
     case 'highlight': {

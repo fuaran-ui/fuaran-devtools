@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "Fuaran DevTools",
-  "version": "0.1.1",
+  "version": "0.2.0",
   "description": "Inspect and edit any Fuaran-rendered page at the typed-tree level: node kinds, bindings, geometry, and gated tree-op editing.",
   "icons": {
     "16": "icons/icon-16.png",

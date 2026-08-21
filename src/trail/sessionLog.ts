@@ -11,7 +11,7 @@
 //  This extension can honour every part of that except the two trees, and the
 //  reason is a property of the relay contract rather than a gap here:
 //
-//      `relay@1.0` has NO read that returns a node's canonical wire JSON.
+//      `relay@1.2` has NO read that returns a node's canonical wire JSON.
 //
 //  Its reads answer what the tree is STRUCTURALLY — kinds, bound slots, child
 //  ids, geometry, one slot's resolved value. None returns the wire form of a
@@ -144,9 +144,9 @@ export interface IntegrityNote {
   readonly reason: string;
 }
 
-/** The standing reason under `relay@1.0`. One sentence per consequence. */
+/** The standing reason under `relay@1.2`. One sentence per consequence. */
 export const RELAY_INTEGRITY_REASON =
-  'relay@1.0 exposes no read returning a node or tree as canonical wire JSON, so this ' +
+  'relay@1.2 exposes no read returning a node or tree as canonical wire JSON, so this ' +
   'recording carries no base tree and no final tree, and its chain is seeded at the genesis ' +
   'hash rather than at a base-tree hash. The op chain itself is complete and independently ' +
   'verifiable; the document is not replayable, and an ingest that requires a base tree should ' +
@@ -184,7 +184,7 @@ export interface SessionNote {
  * read as the wire trees they stand in for.
  */
 export const STRUCTURE_SHAPE_NOTE =
-  "relay@1.0 read.tree.ok — 'kind' is a discriminator name, not a kind object, and property " +
+  "relay@1.2 read.tree.ok — 'kind' is a discriminator name, not a kind object, and property " +
   'values are absent. This is a structural record, not wire-format JSON, and cannot be decoded ' +
   'or replayed as a tree.';
 

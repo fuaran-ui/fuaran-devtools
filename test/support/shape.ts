@@ -20,9 +20,26 @@
  * Leaf keys whose value is a closed-set token, an echoed request field, or an
  * identifier the implementation does not get to choose. Everything else is
  * compared by JSON type only.
+ *
+ * Two fields that LOOK like they belong here and do not, because both are the
+ * responding peer's own identity rather than protocol content the fixture gets
+ * to pin. Both were in this set, and both would fail every peer that ever
+ * advances a minor — which is the exact opposite of what a backward-
+ * compatibility corpus is for:
+ *
+ *  * `$relay` is "the SENDER's relay profile id" (§4). A fixture written at
+ *    `relay@1.0` and answered by a `relay@1.2` peer carries two different ids
+ *    by construction, and both are right. It is checked in the runner against
+ *    the PEER's own id instead — a stricter assertion, not a weaker one, since
+ *    "matches the fixture" would pass a peer that echoed the request's id back
+ *    while "matches my own" catches it.
+ *  * `detail.supported` on a `FOREIGN_PROFILE` refusal is likewise this peer's
+ *    own list. Its TYPE is contractual; its contents are the implementation.
+ *
+ * `profile` stays, and the distinction is the point: §6.3 makes it a function
+ * of the fixture's own `accepts`, so a peer at any minor owes the same answer.
  */
 const ENUMERATED_KEYS = new Set([
-  '$relay',
   'dir',
   'type',
   'id',
@@ -35,7 +52,6 @@ const ENUMERATED_KEYS = new Set([
   'capability',
   'path',
   'received',
-  'supported',
   'cause',
   'event',
   'capabilities',
