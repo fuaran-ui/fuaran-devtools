@@ -10,7 +10,13 @@
 //  beyond the envelope guard, and no page data is retained here.
 // ============================================================================
 
-import { bridgeErr, isBridgeEvent, isBridgeRequest, PANEL_PORT } from './bridge.js';
+import {
+  bridgeErr,
+  isBridgeEvent,
+  isBridgeRequest,
+  isPanelRegistration,
+  PANEL_PORT,
+} from './bridge.js';
 
 /** The panel → background message: a bridge request plus the tab it is for. */
 interface RoutedRequest {
@@ -31,16 +37,24 @@ chrome.runtime.onConnect.addListener((port) => {
   if (port.name !== PANEL_PORT) return;
   let ownTabId: number | undefined;
 
+  const key = (tabId: number): void => {
+    if (ownTabId !== undefined) return;
+    ownTabId = tabId;
+    const set = ports.get(tabId) ?? new Set();
+    set.add(port);
+    ports.set(tabId, set);
+  };
+
   port.onMessage.addListener((message: unknown) => {
+    // The panel registers on connect — and on every REconnect after this
+    // worker was suspended — so events fan out before any request arrives.
+    if (isPanelRegistration(message)) {
+      key(message.tabId);
+      return;
+    }
     if (!isRouted(message)) return;
     const { tabId, request } = message;
-
-    if (ownTabId === undefined) {
-      ownTabId = tabId;
-      const set = ports.get(tabId) ?? new Set();
-      set.add(port);
-      ports.set(tabId, set);
-    }
+    key(tabId);
 
     chrome.tabs
       .sendMessage(tabId, request)

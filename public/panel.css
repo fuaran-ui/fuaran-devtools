@@ -111,7 +111,8 @@ body {
 }
 
 .status[data-state='no-surface'] .dot,
-.status[data-state='no-peer'] .dot {
+.status[data-state='no-peer'] .dot,
+.status[data-state='relay-blocked'] .dot {
   background: var(--warn);
 }
 

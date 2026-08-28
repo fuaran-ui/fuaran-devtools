@@ -72,6 +72,25 @@ export interface BridgeEvent {
   readonly cause?: string;
 }
 
+/**
+ * The panel → background registration: keys the panel's port to its inspected
+ * tab so content-script events fan out to it. Sent immediately on connect —
+ * including every REconnect after a service-worker suspension — so event flow
+ * never waits for the next request to re-key the port.
+ */
+export interface PanelRegistration {
+  readonly tabId: number;
+  readonly register: true;
+}
+
+export const panelRegistration = (tabId: number): PanelRegistration => ({ tabId, register: true });
+
+export const isPanelRegistration = (value: unknown): value is PanelRegistration =>
+  typeof value === 'object' &&
+  value !== null &&
+  typeof (value as PanelRegistration).tabId === 'number' &&
+  (value as PanelRegistration).register === true;
+
 const isEnvelope = (value: unknown): value is Record<string, unknown> =>
   typeof value === 'object' &&
   value !== null &&
@@ -154,11 +173,13 @@ export type ApplyResult =
 // ─── `status` result ────────────────────────────────────────────────
 
 /**
- * The four states the panel renders. They are deliberately distinct: "there is
+ * The states the panel renders. They are deliberately distinct: "there is
  * no Fuaran here" and "there is Fuaran here but no debug surface" call for
  * completely different things from the user, and collapsing them into one
  * empty state is the difference between "this extension does not work" and
- * "turn on the host's debug flag".
+ * "turn on the host's debug flag". `relay-blocked` earns the same treatment:
+ * a page whose CSP refuses the injected relay is not "slow", and telling the
+ * user to reload it sends them somewhere no reload can go.
  */
 export type PageState =
   /** No `data-fuaran-node-id` in the document. */
@@ -167,6 +188,11 @@ export type PageState =
   | 'no-surface'
   /** Fuaran markup present and the peer never answered `hello`. */
   | 'no-peer'
+  /**
+   * Fuaran markup present, the page's CSP blocked the relay injection, and no
+   * host-registered peer answered in its place.
+   */
+  | 'relay-blocked'
   /** Handshake complete. */
   | 'connected';
 

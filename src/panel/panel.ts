@@ -90,6 +90,7 @@ const STATE_TEXT: Record<StatusResult['state'], string> = {
   // would send them looking for a problem that is not there.
   'no-surface': 'Fuaran page — no debug surface exposed.',
   'no-peer': 'Fuaran page — the in-page relay did not answer.',
+  'relay-blocked': 'Fuaran page — the page blocks the inspector relay.',
   connected: 'Connected.',
 };
 
@@ -487,16 +488,22 @@ const refresh = async (): Promise<void> => {
               'This page renders Fuaran markup, but the host exposes no in-page debug surface.',
               'Run the app in a debug build (or enable its debug flag) and reload the page.',
             )
-          : status.state === 'no-peer'
+          : status.state === 'relay-blocked'
             ? emptyState(
-                'No answer from the page',
-                'Fuaran markup is present but the in-page relay did not respond.',
-                'Reload the page — the extension injects its relay at page load.',
+                'Relay blocked by the page',
+                "This page's Content-Security-Policy does not allow the extension's injected relay script, and no host-registered relay peer answered.",
+                'A host can still make this page inspectable by registering its own relay peer in a debug build.',
               )
-            : emptyState(
-                'Not a Fuaran page',
-                'Nothing on this page carries a Fuaran rendered-node marker.',
-              ),
+            : status.state === 'no-peer'
+              ? emptyState(
+                  'No answer from the page',
+                  'Fuaran markup is present but the in-page relay did not respond.',
+                  'Press Refresh to probe again.',
+                )
+              : emptyState(
+                  'Not a Fuaran page',
+                  'Nothing on this page carries a Fuaran rendered-node marker.',
+                ),
       );
       return;
     }

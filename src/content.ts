@@ -32,6 +32,7 @@ import {
   type StatusResult,
 } from './bridge.js';
 import { hasFuaranMarkup, markedElementCount } from './inspect/detect.js';
+import { createRelayInjector } from './inspect/inject.js';
 import { hideHighlight, showHighlight } from './inspect/overlay.js';
 import { startPicking } from './inspect/picker.js';
 import { RelayClient, windowTransport, type RelayFailure } from './relay/client.js';
@@ -42,26 +43,14 @@ const CLIENT_NAME = 'fuaran-devtools';
 const CLIENT_VERSION = '0.1.0';
 const PAGE_RELAY_FILE = 'page-relay.js';
 
-let injected = false;
 let client: RelayClient | undefined;
 let stopPicking: (() => void) | undefined;
 /** The tab's one live subscription id, if `watch` has established one. */
 let subscriptionId: string | undefined;
 let watching = false;
 
-/** Add the page peer to the page's own JS world, once. */
-const injectPageRelay = (): void => {
-  if (injected) return;
-  injected = true;
-  const script = document.createElement('script');
-  script.src = chrome.runtime.getURL(PAGE_RELAY_FILE);
-  script.async = false;
-  // Remove the tag once it has run: the peer's listener is installed by then,
-  // and leaving an extension URL in the app's DOM would be a visible artefact
-  // of an inspector that is supposed to observe without altering.
-  script.addEventListener('load', () => script.remove());
-  (document.head ?? document.documentElement).appendChild(script);
-};
+/** Add the page peer to the page's own JS world, once — see inspect/inject. */
+const injectPageRelay = createRelayInjector(document, chrome.runtime.getURL(PAGE_RELAY_FILE));
 
 const relayClient = (): RelayClient => {
   if (client === undefined) {
@@ -100,7 +89,11 @@ const status = async (): Promise<StatusResult> => {
   const markedElements = markedElementCount(document);
   if (!hasFuaranMarkup(document)) return { state: 'no-fuaran', markedElements: 0 };
 
-  injectPageRelay();
+  // Await the injection outcome BEFORE the first probe: a hello posted in the
+  // injection's turn is lost, not answered late — the peer's listener does not
+  // exist yet. A blocked injection still probes, because a host that registers
+  // its OWN peer answers regardless of what the page's CSP did to ours.
+  const injection = await injectPageRelay();
   let result = await relayClient().hello();
 
   // A page may carry TWO peers — the host's own, and the one this extension
@@ -131,9 +124,16 @@ const status = async (): Promise<StatusResult> => {
     };
   }
 
-  // §6.1's detection table, rendered as the panel's two distinct empty states.
+  // §6.1's detection table, rendered as the panel's distinct empty states.
   const notOptedIn =
     result.failure.kind === 'refusal' && result.failure.refusal.class === 'NOT_OPTED_IN';
+  if (!notOptedIn && injection === 'blocked' && result.failure.kind === 'silent')
+    return {
+      state: 'relay-blocked',
+      markedElements,
+      message:
+        "The page's Content-Security-Policy blocked the extension's relay script, and no host-registered peer answered.",
+    };
   return {
     state: notOptedIn ? 'no-surface' : 'no-peer',
     markedElements,

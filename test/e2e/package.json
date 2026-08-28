@@ -1,0 +1,8 @@
+{
+  "name": "fuaran-devtools-e2e",
+  "private": true,
+  "description": "Standalone manifest for the live-extension smoke test's browser driver — its own node_modules, deliberately outside the extension's dependency tree (mirrors docs/screenshot-harness). Install with: npm i --prefix test/e2e",
+  "dependencies": {
+    "puppeteer-core": "^25.9.0"
+  }
+}
