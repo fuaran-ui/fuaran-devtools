@@ -30,12 +30,19 @@ that point on — the attribution is evidence rather than a claim.
 
 ## Status
 
-Early. The extension is not yet published to any browser store — install it from a release zip or
-load it unpacked (below).
+Published on the
+[Chrome Web Store](https://chromewebstore.google.com/detail/fuaran-devtools/mnikpnkdgoncgdhfpmkendlaaeiidjpn).
+An Edge Add-ons listing is submitted and in review; until it appears, Edge users can install from
+the Chrome Web Store or load the extension unpacked (below).
 
 ## Install
 
-Grab `fuaran-devtools-vX.Y.Z.zip` from the
+**From the store (recommended):** add
+[Fuaran DevTools](https://chromewebstore.google.com/detail/fuaran-devtools/mnikpnkdgoncgdhfpmkendlaaeiidjpn)
+from the Chrome Web Store. Works in Chrome and other Chromium browsers (Edge accepts Chrome Web
+Store extensions).
+
+**For development:** grab `fuaran-devtools-vX.Y.Z.zip` from the
 [latest release](https://github.com/fuaran-ui/fuaran-devtools/releases/latest) and unzip it, or
 build it yourself:
 
