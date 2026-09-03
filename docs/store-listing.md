@@ -29,9 +29,11 @@ Developer Tools
 > with their wire-form expressions and resolved values, and its live geometry. Click Select to pick
 > a node in the page; hover a row to highlight it. Selection is bidirectional.
 >
-> Where the page allows it, the panel also edits: a property editor and a structural palette
-> (insert, remove, move, reorder), derived entirely from the canonical wire schema — no per-kind
-> code, so kinds this build has never seen degrade to read-only rows with the reason on screen.
+> Where the page allows it, the panel also edits: a property editor, a style editor, and a
+> structural palette (insert, remove, move, reorder), derived entirely from the canonical wire
+> schema — no per-kind code, so kinds this build has never seen degrade to read-only rows with the
+> reason on screen. On a page that serves the wire-JSON read, each field shows what the node
+> currently holds and a commit sends an op only for what you changed.
 > Every edit is proposed to the page as a tree-op and applied by the page's own gated apply path:
 > the panel proposes, the host disposes. A page that offers no mutation capability is inspected
 > read-only, with the edit affordances absent rather than disabled.
@@ -52,7 +54,7 @@ _(1280×800, 2–4 of them — to capture against a Fuaran-rendered page with a 
 the playground in debug mode.)_
 
 1. The tree view with a node selected in the page and its binding slots open.
-2. The property editor + structural palette on an editable page.
+2. The property + style editors and the structural palette on an editable page.
 3. The op trail with an undo available and the Export button visible.
 4. _(optional)_ A refusal rendered by class after an edit the host declined.
 

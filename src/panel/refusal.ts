@@ -53,6 +53,17 @@ export const guidanceFor = (refusalClass: string): string => {
       return 'The page did not answer. The edit may or may not have been applied — refresh.';
     case 'MALFORMED_RESPONSE':
       return 'The page answered with a shape this extension could not read.';
+    case 'ENCODE_FAILED':
+      // §7.7 / §9.3. The node is there; its canonical encoding is not
+      // obtainable. Nothing about the edit can help, and — unlike
+      // NODE_NOT_FOUND, which this class exists to stop being confused with —
+      // refreshing will not help either.
+      return 'The host cannot produce this node’s wire JSON, so its values cannot be read.';
+    case 'STALE_READ':
+      // Minted HERE, never by a host: the panel refused to compose an op
+      // because its own derivation was out of date. Named as a refusal so it
+      // renders where the action was, like every other reason nothing happened.
+      return 'The page moved on from what this panel had read. Refresh, then edit again.';
     default:
       // §10.3: an unrecognised class is the generic case, never a crash. It is
       // still shown by name, because the name is the useful part.
@@ -62,4 +73,6 @@ export const guidanceFor = (refusalClass: string): string => {
 
 /** Refusals that mean "the tree moved under you", so a re-read is the response. */
 export const impliesStaleTree = (refusalClass: string): boolean =>
-  refusalClass === 'NODE_NOT_FOUND' || refusalClass === 'NO_ANSWER';
+  refusalClass === 'NODE_NOT_FOUND' ||
+  refusalClass === 'NO_ANSWER' ||
+  refusalClass === 'STALE_READ';

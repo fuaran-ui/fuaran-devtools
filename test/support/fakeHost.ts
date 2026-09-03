@@ -81,6 +81,52 @@ const geometry = (id: string): unknown =>
  */
 const FOUND: Record<string, readonly string[]> = { Metric: ['metric-1', 'metric-2'] };
 
+/**
+ * The wire-JSON encoding of each fake node, as a host's canonical encoder would
+ * produce it.
+ *
+ * Deliberately NOT derived from `FAKE_TREE`: the structural snapshot and the
+ * canonical encoding are different documents about the same node — one reports
+ * the kind DISCRIMINATOR and no values, the other the kind OBJECT and every
+ * value — and deriving one from the other here would build into the fake the
+ * very equivalence the peer is not allowed to assume. `grid-1` carries what the
+ * corpus's `read-node-json` fixture declares: a collection-valued field whose
+ * length nothing else reports, and a closure sentinel.
+ */
+const NODE_JSON: Readonly<Record<string, Record<string, unknown>>> = {
+  root: {
+    id: 'root',
+    kind: {
+      $type: 'Box',
+      layout: { $type: 'Flex', direction: 'Vertical', wrap: false },
+      role: 'Dashboard',
+      children: [
+        { id: 'metric-1', kind: { $type: 'Metric', label: 'Revenue', value: '<closure>' } },
+        {
+          id: 'grid-1',
+          kind: { $type: 'DataGrid', columns: [], source: { $type: 'Query', name: 'channels' } },
+        },
+      ],
+    },
+  },
+  'metric-1': {
+    id: 'metric-1',
+    kind: { $type: 'Metric', label: 'Revenue', value: '<closure>' },
+    style: { emphasis: 'Loud', tone: 'Success' },
+  },
+  'grid-1': {
+    id: 'grid-1',
+    kind: {
+      $type: 'DataGrid',
+      columns: [{ kind: { $type: 'Text' }, label: 'Channel', value: '<closure>' }],
+      source: { $type: 'Query', name: 'channels' },
+    },
+  },
+};
+
+const nodeJson = (id: string): unknown =>
+  NODE_JSON[id] ?? { error: `Node '${id}' not found in tree.` };
+
 export const bareHost: HostSurface = {
   version: '0.1.0',
   getNodeState: nodeState,
@@ -185,6 +231,43 @@ export const unwiredApplyHost: HostSurface = {
   ...bareHost,
   canApply: false,
   apply: () => ({ ok: false, status: 'unwired', error: 'apply is not wired on this host.' }),
+};
+
+/**
+ * A host that additionally serves `read.nodeJson` (§7.7) — the `relay@1.3`
+ * shape.
+ *
+ * Kept separate from `applyHost` rather than folded into it, because the
+ * separation is what the two `relay@1.0` handshake fixtures assert against: a
+ * peer over a surface WITHOUT this read must advertise nothing about it, and a
+ * peer over one WITH it must still withhold it from a `relay@1.0` session.
+ */
+export const nodeJsonHost: HostSurface = { ...applyHost, getNodeJson: nodeJson };
+
+/**
+ * A host whose surface reports that a node exists and cannot be encoded.
+ *
+ * No shipped host raises this — sentinels make the canonical encoder total over
+ * live trees — so the corpus's `ENCODE_FAILED` fixture is answered from a
+ * surface MADE to return that outcome, exactly as `refusal-decode-failed` and
+ * `refusal-validator-reject` are answered from surfaces made to refuse. What
+ * that pins is the peer's MAPPING from a surface outcome onto the class, which
+ * is the part a host with a wider local vocabulary than the wire's depends on.
+ *
+ * The `reason` tag is load-bearing: the payload of a successful read is an
+ * arbitrary JSON object, so a bare `{ error }` cannot be told from a node whose
+ * kind happens to carry an `error` member, and the two §7.7 refusal classes
+ * cannot be told from each other at all.
+ */
+export const encodeFailingHost: HostSurface = {
+  ...nodeJsonHost,
+  getNodeJson: (id) =>
+    id === 'metric-1'
+      ? {
+          error: `Node '${id}' has no canonical wire encoding on this host.`,
+          reason: 'encodeFailed',
+        }
+      : nodeJson(id),
 };
 
 export const taggedHost: HostSurface = {

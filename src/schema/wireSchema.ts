@@ -4,10 +4,18 @@
 //  WHY A SCHEMA AT ALL, AND WHICH ONE
 //
 //  The relay's read set (§7) answers "what is in this tree": a node's kind, its
-//  BOUND binding slots, its child ids, one slot's resolved value, geometry, and
-//  a kind lookup. It deliberately answers nothing about what a kind COULD hold
-//  — there is no `read.kindSchema` in `relay@1.2` — so an editor that waited
-//  for the host to describe its own vocabulary would wait forever.
+//  BOUND binding slots, its child ids, one slot's resolved value, geometry, a
+//  kind lookup, and — since `relay@1.3` — a node's own canonical wire JSON. All
+//  of those report what a node HOLDS. None reports what a kind COULD hold:
+//  there is no `read.kindSchema` at any minor, so an editor that waited for the
+//  host to describe its own vocabulary would wait forever.
+//
+//  The two are complements, not substitutes, and the editor needs both. The
+//  schema says which fields exist and how each is edited; the read says what
+//  each currently holds and how long a collection is. A field the schema
+//  declares and the node omits is an empty editable field; a field the node
+//  holds and the schema does not declare is not offered, because nothing here
+//  knows how to edit it.
 //
 //  The description exists, and it is not a host's: `schema.json` in the wire
 //  format specification is the canonical Draft 2020-12 schema for the whole
@@ -299,13 +307,12 @@ export const classify = (
 /**
  * The editor's rows for one kind, given the slots the node currently binds.
  *
- * Only TOP-LEVEL properties are derived. The schema also describes indexed
- * paths inside collection-valued fields (a grid column's label, say), and the
- * op grammar addresses them — but expanding `[i]` needs the collection's
- * CURRENT LENGTH, and `relay@1.2` serves no read that reports it. Deriving
- * them anyway would offer rows addressing indices that may not exist, which is
- * worse than not offering them: the refusal would arrive after the edit rather
- * than instead of it.
+ * TOP-LEVEL properties only. The indexed paths inside collection-valued fields
+ * are derived separately, by {@link collectionsFor} plus a length the CALLER
+ * supplies from a `read.nodeJson` — because expanding `[i]` needs the
+ * collection's current length, which is a fact about the page rather than about
+ * the schema, and offering a row for an index that may not exist would move the
+ * refusal from before the edit to after it.
  *
  * An unresolvable kind yields `[]` — the caller renders the honest "no schema
  * for this kind" state rather than an editor with nothing in it.
@@ -335,6 +342,117 @@ export const fieldsFor = (
     });
   }
   return fields;
+};
+
+// ─── Collection-valued fields (indexed paths) ───────────────────────
+
+/** One member of a collection element, addressable under `<Collection>[i].`. */
+export interface MemberField {
+  /** The op-path segment — `Label` for the wire's `label`. */
+  readonly path: string;
+  readonly wireName: string;
+  readonly control: Control;
+}
+
+/** A collection-valued property, and what one of its elements holds. */
+export interface CollectionField {
+  /** The collection's own op path — `Columns`. */
+  readonly path: string;
+  readonly wireName: string;
+  readonly members: readonly MemberField[];
+}
+
+/**
+ * Every collection-valued property of a kind whose elements this editor can
+ * offer rows for.
+ *
+ * The admission rule is narrow on purpose. An element must be an OBJECT of
+ * classifiable members: an array of scalars has no `.Member` to address, and an
+ * array of `Node` is the structural ops' business and is already excluded from
+ * the property surface. An element type with no editable member at all yields
+ * no collection here rather than a collection of read-only rows — a header with
+ * nothing under it says "there is something here you cannot reach", which is
+ * the opposite of the truth.
+ *
+ * `$type` is skipped for the same reason it is skipped at the top level: a
+ * discriminator is changed by replacing the thing, not by editing a field.
+ */
+export const collectionsFor = (
+  schema: WireSchema,
+  kinds: ReadonlyMap<string, KindSchema>,
+  discriminator: string,
+): readonly CollectionField[] => {
+  const kind = kinds.get(discriminator);
+  if (kind === undefined) return [];
+
+  const out: CollectionField[] = [];
+  for (const [wireName, property] of Object.entries(kind.properties)) {
+    if (wireName === '$type') continue;
+    if (isStructural(property)) continue;
+    const resolved = deref(schema, property);
+    if (resolved === undefined || resolved['type'] !== 'array') continue;
+
+    const items = resolved['items'];
+    if (!isObject(items)) continue;
+    const element = deref(schema, items);
+    if (element === undefined || element['type'] !== 'object') continue;
+    const properties = element['properties'];
+    if (!isObject(properties)) continue;
+
+    const members: MemberField[] = [];
+    for (const [memberName, memberSchema] of Object.entries(properties)) {
+      if (memberName === '$type' || !isObject(memberSchema)) continue;
+      if (isStructural(memberSchema)) continue;
+      members.push({
+        path: opPathOf(memberName),
+        wireName: memberName,
+        control: classify(schema, memberSchema),
+      });
+    }
+    if (members.every((member) => member.control.kind === 'readonly')) continue;
+    out.push({ path: opPathOf(wireName), wireName, members });
+  }
+  return out;
+};
+
+// ─── The style block ────────────────────────────────────────────────
+
+/** One token of a node's style block. */
+export interface StyleToken {
+  /** The token's wire name — the key inside the style object. */
+  readonly wireName: string;
+  readonly control: Control;
+}
+
+/** The `$defs` name of the node-level style block in the canonical schema. */
+const STYLE_DEF = 'SemanticStyle';
+
+/**
+ * The style block's tokens, from the schema rather than from a list here.
+ *
+ * Read at the NODE level, not from any kind: `style` is a member of `Node`, so
+ * every kind carries the same block and there is exactly one derivation. A
+ * schema that declares no such definition yields `[]`, and the caller renders
+ * no style section — the same degradation every other schema-derived surface
+ * here takes, for the same reason.
+ *
+ * These are the tokens this build can offer a CONTROL for. They are not the
+ * tokens a node may hold: a page running a newer vocabulary carries tokens with
+ * no row here, and the commit path preserves them by merging over the read
+ * rather than rebuilding from these.
+ */
+export const styleTokens = (schema: WireSchema): readonly StyleToken[] => {
+  const block = schema.$defs?.[STYLE_DEF];
+  const resolved = deref(schema, block);
+  if (resolved === undefined) return [];
+  const properties = resolved['properties'];
+  if (!isObject(properties)) return [];
+  const out: StyleToken[] = [];
+  for (const [wireName, property] of Object.entries(properties)) {
+    if (!isObject(property)) continue;
+    out.push({ wireName, control: classify(schema, property) });
+  }
+  return out;
 };
 
 /**

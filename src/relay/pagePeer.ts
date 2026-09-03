@@ -1,5 +1,5 @@
 // ============================================================================
-//  relay/pagePeer — the `relay@1.2` PAGE PEER, over a host's in-page surface.
+//  relay/pagePeer — the `relay@1.3` PAGE PEER, over a host's in-page surface.
 //
 //  This is the half of the relay that runs in the inspected page's own JS
 //  world (`src/page-relay.ts` installs it). It answers relay requests by
@@ -30,6 +30,7 @@
 // ============================================================================
 
 import {
+  capabilitiesAt,
   capabilityFor,
   event as relayEvent,
   isRelayEnvelope,
@@ -37,8 +38,10 @@ import {
   KNOWN_EVENTS,
   negotiate,
   ok,
+  parseProfile,
   refusal,
   RELAY_PROFILE,
+  REQUEST_MINOR,
   selectSessionProfile,
   type BindingInfo,
   type Capability,
@@ -61,6 +64,14 @@ export interface HostSurface {
   getRenderedDom?(nodeId: string): unknown;
   inspectTree?(): unknown;
   findNodes?(kind: string): unknown;
+  /**
+   * `relay@1.3` — the node's own canonical wire JSON, whole subtree (§7.7).
+   *
+   * Returns the node object, or the surface's `{ error }` envelope. A host may
+   * TAG that envelope with `reason: 'encodeFailed'`; see {@link adaptNodeJson}
+   * for why the discriminator has to be a tag and cannot be the shape.
+   */
+  getNodeJson?(nodeId: string): unknown;
   /**
    * The host's own claim that it wired a real apply path. Read as a claim, not
    * as a hint: a surface exposing `apply` WITHOUT this flag is an older shape
@@ -178,6 +189,60 @@ export const adaptFoundNodes = (value: unknown): Record<string, unknown> => {
   if (isPlainObject(value) && Array.isArray(value['nodeIds']))
     return { nodeIds: stringArray(value['nodeIds']) };
   return { nodeIds: [] };
+};
+
+/**
+ * §7.7 / §1.4 — what the surface's `getNodeJson` said, in the contract's
+ * vocabulary.
+ *
+ * THE DISCRIMINATOR HAS TO BE A TAG, and that is the whole content of this
+ * adaptation. Every other read in this module tells an error envelope from a
+ * payload by SHAPE — `{ error }` is not a node snapshot, not a geometry box,
+ * not a resolution. Here the payload is an arbitrary JSON object, so a node
+ * whose kind happens to carry an `error` member is indistinguishable from a
+ * miss, and the two refusal classes §7.7 declares are indistinguishable from
+ * each other. So a refusal is what the surface TAGS as one:
+ *
+ *   - `{ error, reason: 'encodeFailed' }` → `ENCODE_FAILED` — the node is
+ *     there, its canonical encoding is not obtainable;
+ *   - any other `{ error: string }` → `NODE_NOT_FOUND`, which is the untagged
+ *     shape every shipped in-page surface returns for a lookup miss;
+ *   - anything else that is an object → the encoding, passed through whole.
+ *
+ * No shipped host raises the first: sentinels make the canonical encoder total
+ * over live trees, which is exactly why the corpus's refusal fixture is
+ * answered from a surface MADE to return that outcome. What the fixture pins is
+ * this mapping — the part a host with a wider local vocabulary than the wire's
+ * would depend on.
+ */
+export type NodeJsonOutcome =
+  | { readonly kind: 'encoded'; readonly node: Record<string, unknown> }
+  | {
+      readonly kind: 'refused';
+      readonly refusal: Extract<RefusalClass, 'NODE_NOT_FOUND' | 'ENCODE_FAILED'>;
+      readonly message: string;
+    };
+
+export const adaptNodeJson = (value: unknown, nodeId: string): NodeJsonOutcome => {
+  const error = surfaceError(value);
+  if (error !== undefined) {
+    const tagged = isPlainObject(value) && value['reason'] === 'encodeFailed';
+    return {
+      kind: 'refused',
+      refusal: tagged ? 'ENCODE_FAILED' : 'NODE_NOT_FOUND',
+      message: error,
+    };
+  }
+  if (!isPlainObject(value))
+    return {
+      kind: 'refused',
+      refusal: 'NODE_NOT_FOUND',
+      message: `No node '${nodeId}' in the tree.`,
+    };
+  // Passed through WHOLE. §7.7 rule 3 forbids an elided form, and rule 1 puts
+  // the encoding in the host's hands — so a peer that walked this object to
+  // normalise it would be computing the second projection rule 1 forbids.
+  return { kind: 'encoded', node: value };
 };
 
 /**
@@ -398,6 +463,7 @@ export const capabilitiesOf = (surface: HostSurface): Capability[] => {
   if (typeof surface.getRenderedDom === 'function') advertised.push('read.renderedDom');
   if (typeof surface.inspectTree === 'function') advertised.push('read.tree');
   if (typeof surface.findNodes === 'function') advertised.push('read.findNodes');
+  if (typeof surface.getNodeJson === 'function') advertised.push('read.nodeJson');
   if (typeof surface.apply === 'function' && surface.canApply === true) advertised.push('apply');
   if (typeof surface.subscribe === 'function') advertised.push('subscribe');
   return advertised;
@@ -493,7 +559,13 @@ export const createPagePeer = (
           hostVersion: identity.hostVersion,
           surfaceVersion: live.version ?? 'unknown',
           profile: session,
-          capabilities: capabilitiesOf(live),
+          // §6.3's second obligation, and the one the profile bump made real:
+          // capabilities are reported AT THE SESSION PROFILE, so a capability
+          // whose request type arrived after it is absent from this answer. A
+          // `relay@1.0` client is told exactly what a `relay@1.0` client was
+          // ever told — which is what makes the corpus's unchanged 1.0
+          // handshakes evidence that the bump stayed backward-compatible.
+          capabilities: capabilitiesAt(session, capabilitiesOf(live)),
           treeRevision: treeRevision(live),
         });
       }
@@ -549,6 +621,22 @@ export const createPagePeer = (
             reason: 'not-rendered',
           });
         return ok(id, type, geometry);
+      }
+
+      case 'read.nodeJson': {
+        const nodeId = str(payload, 'nodeId');
+        if (nodeId === undefined)
+          return deny('MALFORMED_MESSAGE', 'read.nodeJson requires a string `nodeId`.', {
+            path: 'payload.nodeId',
+          });
+        const outcome = adaptNodeJson(live.getNodeJson?.(nodeId), nodeId);
+        if (outcome.kind === 'refused') return deny(outcome.refusal, outcome.message, { nodeId });
+        // §7.7: the revision the encoding was TAKEN AT, read after the encoding
+        // rather than before. A client's staleness check compares it against a
+        // later revision, so a token issued before the read would name a tree
+        // the payload may already have moved past — the one direction of error
+        // that reports a stale read as fresh.
+        return ok(id, type, { node: outcome.node, treeRevision: treeRevision(live) });
       }
 
       case 'read.findNodes': {
@@ -764,6 +852,27 @@ export const createPagePeer = (
         });
 
       const type: RequestType = message.type;
+
+      // §6.3, per request: a type introduced AFTER the minor this request is
+      // stamped with was never advertised to a session at that minor, so
+      // serving it would hand a client something its own handshake said was not
+      // there. `CAPABILITY_ABSENT` rather than `UNKNOWN_MESSAGE`, for the §10.1
+      // reason: the entry point exists, this session does not have it.
+      //
+      // This is the receiving half of the filter `hello` applies when it
+      // answers. Both are needed and neither implies the other: the handshake
+      // decides what a client is TOLD, and this decides what it is SERVED —
+      // and §11.3's "a client is not a trusted component" is precisely the gap
+      // between the two.
+      const clientMinor = parseProfile(message.$relay)?.minor;
+      if (clientMinor !== undefined && REQUEST_MINOR[type] > clientMinor)
+        return refusal(
+          id,
+          type,
+          'CAPABILITY_ABSENT',
+          `'${type}' was introduced after ${message.$relay}.`,
+          { capability: capabilityFor(type) ?? type },
+        );
 
       // §6.4 + §11.3: re-checked per request rather than trusting a client to
       // ask only for what was advertised. A client is not a trusted component.

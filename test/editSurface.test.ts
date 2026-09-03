@@ -57,8 +57,14 @@ const context = (overrides: Partial<EditContext> = {}): EditContext => ({
   derived,
   tree: TREE,
   node: heading,
+  // The default is the DEGRADED shape — no read — so every test that existed
+  // before `read.nodeJson` keeps asserting what it always asserted: the
+  // set-only editor a page that does not serve the read still gets.
+  nodeJson: undefined,
   held: undefined,
   commit: async () => ({ ok: true, treeRevision: 'r-2' }),
+  revision: () => 'r-1',
+  reread: async () => undefined,
   reload: () => undefined,
   setHeld: () => undefined,
   ...overrides,

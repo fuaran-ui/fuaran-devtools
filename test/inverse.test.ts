@@ -83,11 +83,20 @@ describe('UpdateProp', () => {
     );
   });
 
-  it('refuses when the value before this session was never readable', () => {
-    // The single most common case, and the one where a plausible guess would
-    // be a fabrication: nothing in relay@1.0 returns a property value.
+  it('refuses when this recording holds no earlier reading of the value', () => {
+    // The single most common case, and the one where a plausible guess would be
+    // a fabrication.
+    //
+    // The REASON moved with `relay@1.3` and the refusal did not, which is the
+    // distinction worth pinning: the contract can now read a node's values, and
+    // this trail still captures no reading of them, so the derivation is
+    // unchanged — it is a function of what the recording holds, and it must not
+    // quietly start depending on a read that may never have happened.
     const reason = expectRefused(inverseOf(updateProp('a', 'Text', 'x'), tree(), []));
-    expect(reason).toContain('never');
+    expect(reason).toContain('not in this recording');
+    // Interpolated from the constant rather than written out, so the sentence
+    // cannot go stale against the profile the build actually speaks — which is
+    // exactly how it went stale once.
     expect(reason).toContain(RELAY_PROFILE);
   });
 
@@ -100,7 +109,7 @@ describe('UpdateProp', () => {
     ];
     expect(
       expectRefused(inverseOf(updateProp('grid-1', 'Columns[0].Label', 'B'), tree(), earlier)),
-    ).toContain('never');
+    ).toContain('not in this recording');
   });
 
   it('refuses when the inserted node declared no such field', () => {

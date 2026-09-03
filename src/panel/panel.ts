@@ -14,7 +14,13 @@
 //  built from element constructors, which contains no page data at all.
 // ============================================================================
 
-import type { BindingValue, NodeSnapshot, RenderedDom, TreeSnapshot } from '../relay/protocol.js';
+import type {
+  BindingValue,
+  NodeJsonRead,
+  NodeSnapshot,
+  RenderedDom,
+  TreeSnapshot,
+} from '../relay/protocol.js';
 import type { ApplyResult, StatusResult } from '../bridge.js';
 import type { TreeOpJson } from '../edit/ops.js';
 import { PanelConnection } from './connection.js';
@@ -28,7 +34,12 @@ import {
   reresolve,
 } from './treeModel.js';
 import { definition, el } from './dom.js';
-import { renderPropertyEditor, renderStructural, type EditContext } from './editSurface.js';
+import {
+  renderPropertyEditor,
+  renderStructural,
+  renderStyleEditor,
+  type EditContext,
+} from './editSurface.js';
 import { loadWireSchema, WIRE_SCHEMA_FILE, type DerivedSchema } from './schemaSource.js';
 import { downloadDocument, renderHistory } from './history.js';
 import { Trail } from '../trail/recorder.js';
@@ -72,6 +83,16 @@ let held: string | undefined;
 let derived: DerivedSchema | undefined;
 /** The last revision the page reported, so a `changed` echo is not re-read twice. */
 let lastRevision: string | undefined;
+/**
+ * The focused node's own wire JSON (§7.7), read on focus and held per focus.
+ *
+ * Cleared on every selection change BEFORE the read is issued, so a slow read
+ * can never leave the previous node's values sitting under the new node's
+ * fields. The editor treats its absence as the set-only mode, which is exactly
+ * the right thing to show for the moment before the read lands as well as for a
+ * page that will never serve one.
+ */
+let nodeJson: NodeJsonRead | undefined;
 const collapsed = new Set<string>();
 /**
  * The attributed record of what this session has applied to this page.
@@ -258,7 +279,27 @@ const renderCard = (node: NodeSnapshot): void => {
 
   const context = editContext(node);
   cardPane.appendChild(renderPropertyEditor(context));
+  cardPane.appendChild(renderStyleEditor(context));
   cardPane.appendChild(renderStructural(context));
+};
+
+/**
+ * Read the focused node's wire JSON, or `undefined` when this page does not
+ * serve it.
+ *
+ * A refused or timed-out read is `undefined` too, and deliberately not
+ * distinguished here: both mean the editor has no anchor, and the editor's
+ * degraded mode is the honest answer to either. What must not happen is a
+ * FAILED read leaving a previous node's payload in place — which is why the
+ * caller clears before it asks, not after it answers.
+ */
+const readNodeJson = async (nodeId: string): Promise<NodeJsonRead | undefined> => {
+  if (!capabilities.includes('read.nodeJson')) return undefined;
+  try {
+    return await connection.request<NodeJsonRead>('readNodeJson', { nodeId });
+  } catch {
+    return undefined;
+  }
 };
 
 /**
@@ -304,7 +345,23 @@ const editContext = (node: NodeSnapshot): EditContext => ({
   derived,
   tree,
   node,
+  nodeJson,
   held,
+  // The panel's own view of where the page is, which is the OTHER half of the
+  // staleness comparison: the read carries the revision it was taken at, and
+  // this is the newest revision anything has reported since. `lastRevision` is
+  // updated by an applied op and by every `changed` event, so the two differ
+  // exactly when the tree moved after the read.
+  revision: () => lastRevision,
+  reread: async () => {
+    const fresh = await readNodeJson(node.id);
+    // Adopted as the held read on success only. A failed re-read must leave the
+    // stale one in place rather than clearing it: the editor's rows are already
+    // rendered from it, and blanking them would present "we do not know" as
+    // "the field is empty" — the exact confusion this read exists to end.
+    if (fresh !== undefined) nodeJson = fresh;
+    return fresh;
+  },
   // A person at this panel's keyboard. Recorded only on a CONFIRMED apply — a
   // refused op left the tree unchanged (§8.3), so putting it in the trail would
   // state that it did something — and that rule now lives in `Dispatch`.
@@ -430,6 +487,11 @@ const round = (value: number): string => (Math.round(value * 10) / 10).toString(
 
 const select = async (nodeId: string): Promise<void> => {
   selected = nodeId;
+  // Cleared BEFORE anything is drawn. A read held from the previous selection
+  // describes a different node, and rendering this node's fields from it would
+  // show one node's values under another node's names — the single worst thing
+  // a read-modify-write editor can do, since the user would then commit them.
+  nodeJson = undefined;
   if (tree !== undefined) {
     // Remembered as a path, so a concurrent mutation that removes this node
     // still leaves a trail back to the nearest surviving ancestor.
@@ -449,6 +511,12 @@ const select = async (nodeId: string): Promise<void> => {
   // few seconds old, and the card is the surface a developer trusts.
   try {
     const fresh = await connection.request<NodeSnapshot>('readNodeState', { nodeId });
+    // The wire-JSON read is taken BEFORE the card is rendered, not after, so the
+    // editor is read-modify-write from its first paint rather than becoming so a
+    // beat later. A selection that changed while it was in flight is discarded:
+    // the payload describes a node nobody is looking at any more.
+    const json = await readNodeJson(nodeId);
+    if (selected === nodeId) nodeJson = json;
     renderCard(fresh);
     await fillBindingValues(fresh);
     await fillGeometry(nodeId);
@@ -612,6 +680,7 @@ chrome.devtools.network.onNavigated.addListener(() => {
   selectedPath = [];
   held = undefined;
   lastRevision = undefined;
+  nodeJson = undefined;
   trail.reset();
   renderHistoryBar();
   void refresh();

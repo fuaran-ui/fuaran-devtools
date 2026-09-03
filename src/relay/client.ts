@@ -1,5 +1,5 @@
 // ============================================================================
-//  relay/client — the `relay@1.2` CLIENT PEER.
+//  relay/client — the `relay@1.3` CLIENT PEER.
 //
 //  Issues requests and correlates responses. Runs in the extension's content
 //  script, which shares the page's `window` for `postMessage` purposes while
@@ -28,6 +28,7 @@ import {
   type FoundNodes,
   type HelloOkPayload,
   type BindingValue,
+  type NodeJsonRead,
   type NodeSnapshot,
   type RefusalPayload,
   type RelayEnvelope,
@@ -319,6 +320,31 @@ export class RelayClient {
           overflowing: payload['overflowing'] === true,
           hidden: payload['hidden'] === true,
         };
+      },
+      this.timeout(),
+    );
+  }
+
+  /**
+   * §7.7 — the node's own canonical wire JSON, whole subtree, plus the revision
+   * it was taken at.
+   *
+   * The payload is passed through as the host produced it. Two things this
+   * client deliberately does NOT do: it does not re-order or normalise the
+   * object (§7.7 rule 1 says member order is not observable over a
+   * structured-clone channel, so normalising would be work in service of a
+   * property nobody may depend on), and it does not strip sentinels (rule 2
+   * makes them part of the honest answer — the prohibition is on WRITING them
+   * back, which is the editor's business and is enforced there).
+   */
+  readNodeJson(nodeId: string): Promise<RelayResult<NodeJsonRead>> {
+    return this.call<NodeJsonRead>(
+      'read.nodeJson',
+      { nodeId },
+      (payload) => {
+        const node = payload['node'];
+        if (!isObject(node)) return undefined;
+        return { node, treeRevision: String(payload['treeRevision'] ?? '') };
       },
       this.timeout(),
     );

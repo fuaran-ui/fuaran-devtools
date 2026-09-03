@@ -8,19 +8,23 @@
 //  its chain links — and the final tree the ops produce. Its central claim is
 //  that THESE OPS BUILD THIS TREE, which a reader checks by replaying them.
 //
-//  This extension can honour every part of that except the two trees, and the
-//  reason is a property of the relay contract rather than a gap here:
+//  This extension honours every part of that except the two trees:
 //
-//      `relay@1.2` has NO read that returns a node's canonical wire JSON.
+//      THIS RECORDING CAPTURES NO TREE IN WIRE FORM.
 //
-//  Its reads answer what the tree is STRUCTURALLY — kinds, bound slots, child
-//  ids, geometry, one slot's resolved value. None returns the wire form of a
-//  node, and `treeRevision` is specified as an opaque token a client must not
-//  parse (§5.4). So a base tree cannot be captured, a final tree cannot be
-//  captured, and the base hash — which is the SHA-256 of the base tree's
-//  canonical bytes — cannot be computed. This is the same absence that makes
-//  the property editor a set-only surface and rules out a style editor: one
-//  missing read, three consequences.
+//  The structural reads answer what the tree IS structurally — kinds, bound
+//  slots, child ids — and `treeRevision` is an opaque token a client must not
+//  parse (§5.4), so neither can stand in for a wire tree. `read.nodeJson`
+//  (§7.7) can return one: asked for the root, it returns the whole tree as
+//  canonical wire JSON, whole subtree and no elided variant.
+//
+//  So this is a statement about the RECORDER, not about the contract, and the
+//  distinction is worth keeping sharp because it changes what the honest fix
+//  is. The panel takes that read at FOCUS, for the node being edited, and
+//  discards it on the next selection; nothing takes it at session start or at
+//  export, and nothing computes the base hash from it. Capturing both trees and
+//  emitting the replayable document is therefore work this recorder has not
+//  done — not a door the contract holds shut.
 //
 //  ── So the document is NOT dressed as one it cannot be ─────────────────────
 //
@@ -58,6 +62,7 @@
 //  discriminator name and its nodes carry no properties at all.
 // ============================================================================
 
+import { RELAY_PROFILE } from '../relay/protocol.js';
 import { canonicalJson, encodeString, type JsonValue } from './canonicalJson.js';
 import { encodeActor, GENESIS_PREVIOUS_HASH, type Actor } from './hashChain.js';
 
@@ -144,13 +149,13 @@ export interface IntegrityNote {
   readonly reason: string;
 }
 
-/** The standing reason under `relay@1.2`. One sentence per consequence. */
+/** The standing reason this recording carries no trees. One sentence per consequence. */
 export const RELAY_INTEGRITY_REASON =
-  'relay@1.2 exposes no read returning a node or tree as canonical wire JSON, so this ' +
-  'recording carries no base tree and no final tree, and its chain is seeded at the genesis ' +
-  'hash rather than at a base-tree hash. The op chain itself is complete and independently ' +
-  'verifiable; the document is not replayable, and an ingest that requires a base tree should ' +
-  'reject it on the envelope marker.';
+  'This recording carries no base tree and no final tree, and its chain is seeded at the genesis ' +
+  'hash rather than at a base-tree hash — the panel reads a node as canonical wire JSON when it ' +
+  'is focused for editing, and captures no tree at session start or at export. The op chain ' +
+  'itself is complete and independently verifiable; the document is not replayable, and an ' +
+  'ingest that requires a base tree should reject it on the envelope marker.';
 
 export const relayIntegrity = (): IntegrityNote => ({
   base: 'absent',
@@ -184,9 +189,9 @@ export interface SessionNote {
  * read as the wire trees they stand in for.
  */
 export const STRUCTURE_SHAPE_NOTE =
-  "relay@1.2 read.tree.ok — 'kind' is a discriminator name, not a kind object, and property " +
-  'values are absent. This is a structural record, not wire-format JSON, and cannot be decoded ' +
-  'or replayed as a tree.';
+  `${RELAY_PROFILE} read.tree.ok — 'kind' is a discriminator name, not a kind object, and ` +
+  'property values are absent. This is a structural record, not wire-format JSON, and cannot be ' +
+  'decoded or replayed as a tree.';
 
 export interface TrailAppendixInput {
   readonly integrity: IntegrityNote;

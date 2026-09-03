@@ -1,7 +1,7 @@
 // ============================================================================
 //  bridge — the extension-private panel ↔ content-script protocol.
 //
-//  DELIBERATELY NOT THE RELAY. The relay contract (`relay@1.2`) governs the
+//  DELIBERATELY NOT THE RELAY. The relay contract (`relay@1.3`) governs the
 //  page ↔ extension boundary and has a closed message set; carrying the
 //  panel's own concerns — highlight, pick, detection status — over it would
 //  make every one of them an `UNKNOWN_MESSAGE`, and would quietly turn a
@@ -27,6 +27,9 @@ export type BridgeMethod =
   | 'readNodeState'
   | 'readBindingValue'
   | 'readRenderedDom'
+  /** The focused node's own canonical wire JSON (§7.7) — the read the property
+   *  editor derives its current values and its indexed paths from. */
+  | 'readNodeJson'
   /** Propose one tree-op through the page's own gated apply path. */
   | 'apply'
   /** Establish (idempotently) the tab's change subscription. */

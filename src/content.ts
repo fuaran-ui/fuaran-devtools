@@ -11,7 +11,7 @@
 //      This route needs no `scripting` permission and no host permission,
 //      which is why it is preferred over `chrome.scripting.executeScript`:
 //      the extension asks for strictly less than the alternative.
-//   3. SPEAK THE RELAY. This script is the `relay@1.2` CLIENT peer. Relay
+//   3. SPEAK THE RELAY. This script is the `relay@1.3` CLIENT peer. Relay
 //      traffic never leaves the tab (DEVTOOLS_RELAY §1.2); what crosses to the
 //      panel is already-shaped result data on the extension-private bridge.
 //   4. OVERLAY + PICK. Both are pure DOM work, so they live here rather than
@@ -240,6 +240,8 @@ const handle = async (request: BridgeRequest): Promise<unknown> => {
       );
     case 'readRenderedDom':
       return unwrap(relayClient().readRenderedDom(requireString(request, 'nodeId')));
+    case 'readNodeJson':
+      return unwrap(relayClient().readNodeJson(requireString(request, 'nodeId')));
     case 'apply': {
       // §8.2.1 rule 1: absence already says `human`, so the default class is
       // OMITTED rather than spelled out. That keeps a panel-authored envelope

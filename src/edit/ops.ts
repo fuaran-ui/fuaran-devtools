@@ -43,6 +43,26 @@ export const updateProp = (target: string, path: string, value: unknown): TreeOp
   value,
 });
 
+/**
+ * `{"$type":"UpdateStyle","style":{…},"target":…}` — the node's WHOLE style
+ * block, replaced.
+ *
+ * There is no per-token path in the op grammar, and that is why this signature
+ * takes a block rather than a token: an editor that could only send one token
+ * would have to send it as a block of one, silently discarding every other
+ * token the node carried. The merge is therefore the caller's obligation and is
+ * done against the block the node actually holds — see `panel/nodeJson`'s
+ * `mergeStyle`, which is the one place that composition lives.
+ */
+export const updateStyle = (
+  target: string,
+  style: Readonly<Record<string, unknown>>,
+): TreeOpJson => ({
+  $type: 'UpdateStyle',
+  style,
+  target,
+});
+
 /** `{"$type":"InsertChild","child":{…},"parentId":…}` */
 export const insertChild = (parentId: string, child: NodeJson): TreeOpJson => ({
   $type: 'InsertChild',

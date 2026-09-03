@@ -53,7 +53,7 @@ const fixture = (id: string) => manifest.fixtures.find((entry) => entry.id === i
 
 const respondWith = (file: string) => () => readFixture(file);
 
-describe('relay@1.0 corpus — client peer', () => {
+describe('relay corpus — client peer', () => {
   it('completes the read-only handshake and keeps the advertised capabilities', async () => {
     const entry = fixture('hello-read-only');
     expect(entry?.responseFile).toBeDefined();
@@ -138,6 +138,46 @@ describe('relay@1.0 corpus — client peer', () => {
     expect(result.ok).toBe(true);
     if (!result.ok) return;
     expect(result.value.nodeIds).toHaveLength(count);
+  });
+
+  it('reads a node’s canonical wire JSON, sentinels and all (§7.7)', async () => {
+    const peer = client(respondWith(fixture('read-node-json')!.responseFile!));
+    const result = await peer.readNodeJson('grid-1');
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+
+    // The payload is the HOST's document. A client that narrowed it to a shape
+    // declared in this build would make this build's idea of the format the
+    // gate on what a newer page may say — the opposite of §10.2 — so the
+    // assertion is that it arrived whole, not that it matched a schema here.
+    const kind = result.value.node['kind'] as Record<string, unknown>;
+    const columns = kind['columns'] as unknown[];
+    expect(columns).toHaveLength(1);
+    // The collection's LENGTH is the fact no other read reports, and the reason
+    // an indexed path could not be derived before this read existed.
+    const column = columns[0] as Record<string, unknown>;
+    expect(column['label']).toBe('Channel');
+    // §7.7 rule 2: a sentinel is carried verbatim rather than refused or
+    // stripped. An encoding WITH sentinels is the canonical encoding.
+    expect(column['value']).toBe('<closure>');
+    // §5.4 / §7.7: the revision the encoding was taken at, for the client's own
+    // staleness check. Opaque — carried, never parsed.
+    expect(result.value.treeRevision).not.toBe('');
+  });
+
+  it('reports a wire-JSON response with no node as malformed, never as an empty node', async () => {
+    const peer = client(() => ({
+      $relay: 'relay@1.3',
+      dir: 'response',
+      type: 'read.nodeJson.ok',
+      payload: { treeRevision: 'r-1' },
+    }));
+    const result = await peer.readNodeJson('grid-1');
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    // An empty object here would reach the editor as "this node holds nothing",
+    // and the editor would then offer to commit that reading back.
+    expect(result.failure.kind).toBe('malformed');
   });
 
   // Every refusal class in the corpus, surfaced by class — including the three

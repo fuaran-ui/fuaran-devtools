@@ -12,11 +12,15 @@ is not the one the application is running: one typed node can project to several
 projection carries neither the node's kind nor its binding slots. Reading the wrong tree is worse
 than reading none.
 
-It also **edits**, where the page allows it. Select a node and the panel offers a property editor and
-a structural palette — insert, remove, move, reorder. Every edit is proposed to the page as a tree-op
-and applied by the page's own gated apply path; the panel proposes, the host disposes. A page that
-offers no mutation capability is inspected exactly as before, with the edit affordances absent rather
-than disabled.
+It also **edits**, where the page allows it. Select a node and the panel offers a property editor, a
+style editor, and a structural palette — insert, remove, move, reorder. Every edit is proposed to the
+page as a tree-op and applied by the page's own gated apply path; the panel proposes, the host
+disposes. A page that offers no mutation capability is inspected exactly as before, with the edit
+affordances absent rather than disabled.
+
+Where the page serves it, the property editor is **read-modify-write**: each field shows what the
+node currently holds, and committing sends an op only for what you actually changed. A page that does
+not serve that read gets the set-only editor instead, which says so.
 
 Nothing here is per-kind code. The fields offered for a node and the candidates offered by the
 palette are **derived from the canonical wire schema**, so a kind added to the vocabulary shows up
@@ -74,7 +78,7 @@ that is not there.
 
 ## How it works
 
-The extension speaks the **`relay@1.2`** page↔extension contract, specified in
+The extension speaks the **`relay@1.3`** page↔extension contract, specified in
 [`DEVTOOLS_RELAY.md`](https://github.com/fuaran-ui/fuaran-ui-specification) alongside the Fuaran UI
 wire format. Four pieces:
 
@@ -83,7 +87,7 @@ wire format. Four pieces:
 | `src/content.ts`    | extension's isolated world | detect, inject, speak the relay as the **client peer**, draw the overlay, run the picker |
 | `src/page-relay.ts` | the page's own JS world    | the relay **page peer** — wraps the host's in-page surface in relay envelopes            |
 | `src/background.ts` | MV3 service worker         | route panel ↔ content-script messages for the inspected tab                              |
-| `src/panel/`        | the DevTools panel page    | tree view, breadcrumb, node card, property editor, structural palette                    |
+| `src/panel/`        | the DevTools panel page    | tree view, breadcrumb, node card, property + style editors, structural palette           |
 | `src/schema/`       | (pure)                     | derive per-kind fields and minimal-valid candidates from the wire schema                 |
 | `src/edit/`         | (pure)                     | compose the tree-ops the panel proposes                                                  |
 | `src/trail/`        | (pure)                     | record applied ops, hash-chain them, derive an undo, write the export document           |
@@ -189,10 +193,12 @@ carries a different marker, `fuaran-devtools-op-trail`, and the reason is worth 
 
 A session op log's central claim is that **its ops build its tree**: it carries a base tree, the ops,
 and the final tree, and a reader checks the claim by replaying them. This extension can honour every
-part of that except the two trees, because `relay@1.2` has no read that returns a node's canonical
-wire JSON. Its reads answer what the tree is structurally; none returns the wire form of a node, and
-`treeRevision` is specified as an opaque token a client must not parse. Without a base tree there is
-also no base hash, so the chain is seeded at the genesis hash instead.
+part of that except the two trees, because this recording captures none. The structural reads answer
+what the tree is structurally, and `treeRevision` is an opaque token a client must not parse; the
+wire-JSON read is taken at focus, for the node being edited, and discarded at the next selection.
+Nothing takes it at session start or at export. Without a base tree there is also no base hash, so
+the chain is seeded at the genesis hash instead — a statement about this recorder rather than about
+the contract, which is worth being exact about because it changes what the honest fix is.
 
 So the document says so, in the document:
 
@@ -205,7 +211,7 @@ So the document says so, in the document:
   "ops": [{ "seq": 1, "actor": { "kind": "human", "id": "devtools" }, "prevHash": "…", "hash": "…", "op": { … } }],
   "tree": null,
   "integrity": { "base": "absent", "tree": "absent", "chainSeed": "genesis", "reason": "…" },
-  "session": { "host": "…", "profile": "relay@1.2", "startedAt": "…", "startRevision": "…", … },
+  "session": { "host": "…", "profile": "relay@1.3", "startedAt": "…", "startRevision": "…", … },
   "structure": { "shape": "…", "base": { … }, "final": { … } }
 }
 ```
@@ -334,26 +340,26 @@ recording is gone.
 Worth stating plainly, because each of these shapes the UI and none of them is a defect to be worked
 around locally:
 
-- **Property values are not readable.** The relay profile's reads answer what is in the tree
-  structurally — kind, bound slots, child ids, geometry, one slot's resolved value. None returns a
-  node's property values, so the property editor is a **set** surface: a field commits what you type
-  and no field claims to show what is there now. The panel says so rather than showing a blank box
-  that reads as "currently empty".
+- **A page may not serve the wire-JSON read.** `read.nodeJson` returns the focused node's own
+  canonical wire JSON, and it is what makes the property editor read-modify-write, the style editor
+  possible at all, and an indexed path into a collection derivable. It is a capability, so a page
+  that does not offer it gets the earlier surface: a **set** editor where a field commits what you
+  type and no field claims to show what is there now. The panel says so, rather than showing a blank
+  box that reads as "currently empty".
 - **There is no dry-run.** `apply` applies. A candidate cannot be tried before it is offered, so the
   palette is optimistic: it offers what it can construct and what the schema does not rule out, and
   the host's gate has the last word. The two local gates only ever REMOVE offers — a kind whose
   requirements cannot be synthesised is not offered at all, and a parent the schema says holds no
   children cannot take one.
-- **Style is not editable here.** The style op replaces a node's whole style block, and with no read
-  of the current one, committing a single token would silently discard the rest. An edit that
-  destroys what it cannot see is not worth offering.
-- **A recording is not replayable.** The same missing read means no base tree and no final tree, so
-  the export is a provenance record rather than a session that can be replayed — and some undos are
-  unavailable for exactly the same reason. See [The recording](#the-recording).
-
-A profile that served a node's own wire JSON would close the first, third and fourth of these, and
-make the second unnecessary. That is a change to the contract, not to this extension, and belongs
-upstream.
+- **Style needs the whole block.** The style op replaces a node's whole style block; there is no
+  per-token path. So the style editor exists only where the current block can be read, and it commits
+  the block MERGED over what it read — which preserves every other token by construction, including
+  tokens this build's schema has never heard of. Without the read the section is absent and says why:
+  an edit that destroys what it cannot see is not worth offering.
+- **A recording carries no trees.** The panel reads a node's wire JSON when the node is focused, for
+  editing; nothing captures a tree at session start or at export. So the export is a provenance
+  record rather than a session that can be replayed, and some undos are unavailable because this
+  recording holds no earlier reading of the value. See [The recording](#the-recording).
 
 ## Dependencies
 

@@ -28,14 +28,23 @@
 //    UpdateProp        recoverable ONLY if this session already knows what was
 //                      there — an earlier recorded edit to the same node and
 //                      path, or the value the node was INSERTED with. Otherwise
-//                      not: `relay@1.2` cannot read a property value, so the
-//                      value before this session's first edit was never
-//                      knowable and inventing one would be a fabrication.
+//                      not: this RECORDING holds no earlier reading of it, and
+//                      inventing one would be a fabrication.
+//
+//                      `read.nodeJson` changes what is POSSIBLE here and not
+//                      what is recorded. The editor reads a node's values at
+//                      focus, to edit them; nothing captures that read into the
+//                      trail, so the value before this session's first edit is
+//                      still not in the record. Capturing it is a change to the
+//                      RECORDER, not a change to this derivation — which stays
+//                      a function of what the trail holds, so that it cannot
+//                      quietly start depending on a read that may not have
+//                      happened.
 //    InsertChild       always — the panel minted the child, so its id is known.
-//    RemoveNode        never. The subtree is gone and was never readable as
-//                      wire JSON, so nothing here can put it back. A "restore"
-//                      that re-inserted a structurally-similar husk with no
-//                      properties would be worse than refusing.
+//    RemoveNode        never. The subtree is gone and this recording holds no
+//                      wire-JSON copy of it, so nothing here can put it back. A
+//                      "restore" that re-inserted a structurally-similar husk
+//                      with no properties would be worse than refusing.
 //    MoveNode          always, when the node had a parent: the snapshot names
 //                      the old parent and the old sibling order.
 //    ReorderChildren   always — the snapshot names the old order.
@@ -54,7 +63,7 @@
 //  than offering an undo that turns out to be a lie.
 // ============================================================================
 
-import type { TreeSnapshot } from '../relay/protocol.js';
+import { RELAY_PROFILE, type TreeSnapshot } from '../relay/protocol.js';
 import {
   batch,
   moveNode,
@@ -165,8 +174,9 @@ export const inverseOf = (
       const prior = priorValue(target, path, earlier);
       if (!prior.known)
         return unavailable(
-          `What '${target}.${path}' held before this session's first edit to it was never ` +
-            'readable — relay@1.2 has no read of a property value — so it cannot be restored.',
+          `What '${target}.${path}' held before this session's first edit to it is not in this ` +
+            `recording — ${RELAY_PROFILE} can read a node's values, but this trail captures no ` +
+            'reading of them — so it cannot be restored.',
         );
       return { ok: true, op: updateProp(target, path, prior.value) };
     }
@@ -180,8 +190,8 @@ export const inverseOf = (
 
     case 'RemoveNode':
       return unavailable(
-        'A removed subtree cannot be restored: relay@1.2 never let this panel read it as wire ' +
-          'JSON, and re-inserting a structural husk would put back something the page never had.',
+        'A removed subtree cannot be restored: this recording holds no wire-JSON copy of it, and ' +
+          're-inserting a structural husk would put back something the page never had.',
       );
 
     case 'MoveNode': {

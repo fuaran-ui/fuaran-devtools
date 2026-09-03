@@ -17,10 +17,17 @@
 import { describe, expect, it } from 'vitest';
 
 import { createPagePeer, type HostSurface } from '../src/relay/pagePeer.js';
-import { RELAY_PROFILE, type RelayEnvelope } from '../src/relay/protocol.js';
+import { negotiate, RELAY_PROFILE, type RelayEnvelope } from '../src/relay/protocol.js';
 import { readFixture, readManifest } from './support/corpus.js';
 import { describeMismatches, shapeMismatches } from './support/shape.js';
-import { applyHost, applyHostWith, bareHost, taggedHost } from './support/fakeHost.js';
+import {
+  applyHost,
+  applyHostWith,
+  bareHost,
+  encodeFailingHost,
+  nodeJsonHost,
+  taggedHost,
+} from './support/fakeHost.js';
 
 const IDENTITY = { host: 'fuaran-devtools-page-relay', hostVersion: '0.1.0' };
 
@@ -62,6 +69,17 @@ const SERVED: Record<string, HostSurface | undefined> = {
   // (`refusal-capability-absent` stays on the READ-ONLY host above: the
   // fixture's whole content is a host that does not offer apply, so serving it
   // from an apply-capable one would assert nothing.)
+
+  // ── `relay@1.3` — the node's own wire JSON (§7.7) ──
+  //
+  // A surface that serves the read, so the peer advertises and serves it. The
+  // two `relay@1.0` handshakes above stay on hosts WITHOUT it — that pairing is
+  // what makes the corpus evidence about §6.3's per-minor gating rather than
+  // about one host's capability list.
+  'hello-node-json': nodeJsonHost,
+  'read-node-json': nodeJsonHost,
+  'read-node-json-subtree': nodeJsonHost,
+  'refusal-encode-failed': encodeFailingHost,
 };
 
 /**
@@ -79,9 +97,20 @@ const NOT_SERVED: Record<string, string> = {
 
 const manifest = readManifest();
 
-describe('relay@1.0 corpus — page peer', () => {
-  it('speaks the profile the corpus declares', () => {
-    expect(manifest.profile).toBe('relay@1.0');
+describe('relay corpus — page peer', () => {
+  it('serves every minor the corpus reaches', () => {
+    // The manifest's `profile` is the HIGHEST minor the fixtures reach, not a
+    // claim that every minor below it is covered — the corpus legitimately
+    // holds fixtures at two minors, because a minor's fixtures land when a
+    // SECOND host serves it and minors do not reach their second host in order.
+    //
+    // So the assertion is that this peer can SERVE that minor, not that it
+    // equals it. Pinning equality is what made this line go red the moment the
+    // corpus advanced, which was the right alarm and the wrong assertion: it
+    // says a peer is only conformant against a corpus frozen at its own
+    // version.
+    expect(negotiate(manifest.profile)).not.toBe('Foreign');
+    expect(negotiate(manifest.profile)).toBe('Current');
   });
 
   it('classifies every fixture as served or explicitly out of reach', () => {
@@ -109,10 +138,11 @@ describe('relay@1.0 corpus — page peer', () => {
       // §4.1 — the id is echoed verbatim, refusals included.
       expect(actual.id).toBe(request['id']);
       // §4 — `$relay` is the SENDER's own profile id, so it is asserted against
-      // this peer's id and not the fixture's. The corpus is written at
-      // `relay@1.0` and this peer answers at `relay@1.2`; both are correct, and
-      // a runner pinning the fixture's value would be testing the fixture
-      // author's version rather than this implementation's conformance.
+      // this peer's id and not the fixture's. A fixture written at one minor and
+      // answered by a peer at another carries two different ids by construction,
+      // and both are right; a runner pinning the fixture's value would be
+      // testing the fixture author's version rather than this implementation's
+      // conformance.
       expect(actual.$relay).toBe(RELAY_PROFILE);
       // §4.2 — `<type>.ok` or `refusal`; there is no third outcome.
       expect(actual.type).toBe(expected['type']);
@@ -125,6 +155,84 @@ describe('relay@1.0 corpus — page peer', () => {
       expect(mismatches, `\n${describeMismatches(mismatches)}\n`).toEqual([]);
     });
   }
+
+  // ── §7.7 rule 3, which no shape comparison can reach ──
+  //
+  // The `read-node-json-subtree` fixture's own manifest entry says why it needs
+  // its own assertion: an ELIDED encoding is well-formed wire JSON for a
+  // different node, so a runner checking only well-formedness passes exactly
+  // what the rule forbids. The host-agnostic form of the check is the one the
+  // manifest names — every child the peer itself reports for this node must
+  // appear inside the encoding it returned — because kinds and child sets
+  // legitimately differ between hosts while that correspondence does not.
+  it('returns the whole subtree, with no child elided (§7.7 rule 3)', () => {
+    const peer = createPagePeer(nodeJsonHost, IDENTITY);
+    const request = readFixture('read-node-json-subtree.request.json');
+    const nodeId = (request['payload'] as Record<string, unknown>)['nodeId'] as string;
+
+    const state = peer.handle({ ...request, id: 'c-state', type: 'read.nodeState' });
+    const childIds = (state?.payload['childIds'] ?? []) as readonly string[];
+    expect(childIds.length, 'the fixture node must have children to elide').toBeGreaterThan(0);
+
+    const encoded = JSON.stringify(peer.handle(request)?.payload['node']);
+    for (const child of childIds)
+      expect(encoded, `child '${child}' is missing from the encoding`).toContain(`"${child}"`);
+    expect(nodeId).toBe('root');
+  });
+
+  // ── §6.3, the rule the profile bump made load-bearing ──
+  //
+  // Two halves that look like one and are not: what a session is TOLD, and what
+  // it is SERVED. A peer could filter its handshake correctly and still answer
+  // a request a client made anyway, which is precisely the case §11.3's "a
+  // client is not a trusted component" covers.
+  it('withholds a later minor’s capability from an earlier session, and serves neither', () => {
+    const peer = createPagePeer(nodeJsonHost, IDENTITY);
+
+    const older = peer.handle({
+      $relay: 'relay@1.0',
+      dir: 'request',
+      id: 'c-1',
+      type: 'hello',
+      payload: { client: 'x', clientVersion: '1', accepts: ['relay@1.0'] },
+    });
+    expect(older?.payload['profile']).toBe('relay@1.0');
+    expect(older?.payload['capabilities']).not.toContain('read.nodeJson');
+    // The 1.0 set is untouched: a per-minor filter that also dropped what was
+    // always there would be a backward-compatibility break wearing the costume
+    // of one.
+    expect(older?.payload['capabilities']).toContain('read.tree');
+
+    const refused = peer.handle({
+      $relay: 'relay@1.0',
+      dir: 'request',
+      id: 'c-2',
+      type: 'read.nodeJson',
+      payload: { nodeId: 'grid-1' },
+    });
+    // CAPABILITY_ABSENT, not UNKNOWN_MESSAGE: the entry point exists, and this
+    // session does not have it (§10.1).
+    expect(refused?.type).toBe('refusal');
+    expect(refused?.payload['class']).toBe('CAPABILITY_ABSENT');
+
+    const current = peer.handle({
+      $relay: RELAY_PROFILE,
+      dir: 'request',
+      id: 'c-3',
+      type: 'hello',
+      payload: { client: 'x', clientVersion: '1', accepts: [RELAY_PROFILE, 'relay@1.0'] },
+    });
+    expect(current?.payload['capabilities']).toContain('read.nodeJson');
+  });
+
+  it('advertises nothing about a read the surface does not serve', () => {
+    // §6.4: a capability is a fact about the surface in front of the peer. A
+    // 1.3 peer over a 1.0-era surface offers the 1.0 set and says so.
+    const peer = createPagePeer(applyHost, IDENTITY);
+    const handshake = peer.handle(readFixture('hello-node-json.request.json'));
+    expect(handshake?.payload['profile']).toBe(RELAY_PROFILE);
+    expect(handshake?.payload['capabilities']).not.toContain('read.nodeJson');
+  });
 
   // ── the emitted half (§8.5) ──
   //

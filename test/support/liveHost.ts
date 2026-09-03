@@ -23,6 +23,8 @@ export interface LiveNode {
   id: string;
   kind: Record<string, unknown>;
   children: LiveNode[];
+  /** The node-level style block, when the node carries one. */
+  style?: Record<string, unknown>;
 }
 
 export const node = (
@@ -30,7 +32,13 @@ export const node = (
   discriminator: string,
   props: Record<string, unknown> = {},
   children: LiveNode[] = [],
-): LiveNode => ({ id, kind: { $type: discriminator, ...props }, children });
+  style?: Record<string, unknown>,
+): LiveNode => ({
+  id,
+  kind: { $type: discriminator, ...props },
+  children,
+  ...(style === undefined ? {} : { style }),
+});
 
 const clone = (tree: LiveNode): LiveNode => JSON.parse(JSON.stringify(tree)) as LiveNode;
 
@@ -54,9 +62,81 @@ const parentOf = (tree: LiveNode, id: string): LiveNode | undefined => {
 
 const ids = (tree: LiveNode): string[] => [tree.id, ...tree.children.flatMap(ids)];
 
-/** The wire spelling of an op path: the leading character lower-cased. */
+/** The wire spelling of an op-path segment: the leading character lower-cased. */
 const wireName = (path: string): string =>
   path.length === 0 ? path : path[0]!.toLowerCase() + path.slice(1);
+
+const SEGMENT = /^([A-Za-z_$][A-Za-z0-9_$]*)(?:\[(\d+)\])?$/;
+
+/**
+ * Assign `value` at an op path inside a kind object, walking `Columns[0].Label`
+ * the way a real apply engine does.
+ *
+ * Indexed segments are here because the panel derives them and the corpus's own
+ * op family covers them — including the out-of-range case, which this refuses
+ * rather than extending the array. A host that grew the collection to fit the
+ * index would be inventing elements nobody authored, and would make the panel's
+ * bounds check untestable by making it unnecessary for the wrong reason.
+ */
+const assignAtPath = (
+  kind: Record<string, unknown>,
+  path: string,
+  value: unknown,
+  discriminator: string,
+): Failure | undefined => {
+  const segments = path.split('.');
+  let holder: Record<string, unknown> = kind;
+
+  for (let i = 0; i < segments.length; i += 1) {
+    const match = SEGMENT.exec(segments[i]!);
+    if (match === null)
+      return { code: 'FUARAN-APPLY-MALFORMED-PATH', message: `'${path}' is not a legal op path.` };
+    const key = wireName(match[1]!);
+    const index = match[2] === undefined ? undefined : Number(match[2]);
+    const last = i === segments.length - 1;
+
+    if (index === undefined) {
+      if (last) {
+        if (!(key in holder))
+          return {
+            code: 'FUARAN-APPLY-UNKNOWN-PATH',
+            message: `'${path}' is not a field of ${discriminator}.`,
+          };
+        holder[key] = value;
+        return undefined;
+      }
+      const next = holder[key];
+      if (typeof next !== 'object' || next === null || Array.isArray(next))
+        return {
+          code: 'FUARAN-APPLY-UNKNOWN-PATH',
+          message: `'${path}' is not a field of ${discriminator}.`,
+        };
+      holder = next as Record<string, unknown>;
+      continue;
+    }
+
+    const collection = holder[key];
+    if (!Array.isArray(collection))
+      return {
+        code: 'FUARAN-APPLY-UNKNOWN-PATH',
+        message: `'${key}' is not a collection on ${discriminator}.`,
+      };
+    if (index >= collection.length)
+      return {
+        code: 'FUARAN-APPLY-INDEX-OUT-OF-RANGE',
+        message: `'${path}' addresses element ${index} of ${collection.length}.`,
+      };
+    const element = collection[index];
+    if (typeof element !== 'object' || element === null)
+      return { code: 'FUARAN-APPLY-UNKNOWN-PATH', message: `'${path}' does not resolve.` };
+    if (last) {
+      collection[index] = value;
+      return undefined;
+    }
+    holder = element as Record<string, unknown>;
+  }
+  return { code: 'FUARAN-APPLY-MALFORMED-PATH', message: `'${path}' is empty.` };
+};
 
 type Failure = { readonly code: string; readonly message: string };
 
@@ -76,13 +156,26 @@ const applyTo = (tree: LiveNode, op: Record<string, unknown>): Failure | undefin
       const target = find(tree, String(op['target']));
       if (target === undefined)
         return { code: 'NODE-MISSING', message: `No node '${String(op['target'])}'.` };
-      const key = wireName(String(op['path']));
-      if (!(key in target.kind))
-        return {
-          code: 'FUARAN-APPLY-UNKNOWN-PATH',
-          message: `'${String(op['path'])}' is not a field of ${String(target.kind['$type'])}.`,
-        };
-      target.kind[key] = op['value'];
+      return assignAtPath(
+        target.kind,
+        String(op['path']),
+        op['value'],
+        String(target.kind['$type']),
+      );
+    }
+    case 'UpdateStyle': {
+      const target = find(tree, String(op['target']));
+      if (target === undefined)
+        return { code: 'NODE-MISSING', message: `No node '${String(op['target'])}'.` };
+      const style = op['style'];
+      if (typeof style !== 'object' || style === null || Array.isArray(style))
+        return { code: 'STYLE-SHAPE', message: 'UpdateStyle needs a style object.' };
+      // REPLACES the block, exactly as the op grammar says. The host does not
+      // merge, and must not: if it did, the whole reason a panel has to read the
+      // block before editing it would disappear, and the falsifier that proves
+      // the merge happens would pass against a panel that had never read
+      // anything.
+      target.style = { ...(style as Record<string, unknown>) };
       return undefined;
     }
     case 'InsertChild': {
@@ -143,6 +236,7 @@ const applyTo = (tree: LiveNode, op: Record<string, unknown>): Failure | undefin
 const KNOWN_OPS = new Set([
   'Batch',
   'UpdateProp',
+  'UpdateStyle',
   'InsertChild',
   'RemoveNode',
   'MoveNode',
@@ -192,6 +286,24 @@ export const liveHost = (
     for (const listener of listeners) listener(change);
   };
 
+  /**
+   * The node's WIRE form: the kind OBJECT with its values, children nested
+   * inside it, and the style block at the node level.
+   *
+   * Deliberately a different projection from `project` below, because the two
+   * are different documents about the same node — the structural snapshot
+   * reports a kind DISCRIMINATOR and no values at all. A fake that served one
+   * from the other would build in the equivalence the peer must not assume.
+   */
+  const wireJson = (live: LiveNode): Record<string, unknown> => ({
+    id: live.id,
+    kind: {
+      ...live.kind,
+      ...(live.children.length === 0 ? {} : { children: live.children.map(wireJson) }),
+    },
+    ...(live.style === undefined ? {} : { style: live.style }),
+  });
+
   const project = (live: LiveNode): Record<string, unknown> => ({
     id: live.id,
     // The relay reports the kind DISCRIMINATOR, not the kind object.
@@ -210,6 +322,15 @@ export const liveHost = (
       return () => listeners.delete(listener);
     },
     inspectTree: () => project(tree),
+    // §7.7 — the node's own canonical wire JSON, whole subtree. Deep-cloned so
+    // a caller holding the payload cannot reach into the live tree through it;
+    // a real host encodes into a fresh document for the same reason.
+    getNodeJson: (id) => {
+      const found = find(tree, id);
+      return found === undefined
+        ? { error: `Node '${id}' not found in tree.` }
+        : (JSON.parse(JSON.stringify(wireJson(found))) as unknown);
+    },
     getNodeState: (id) => {
       const found = find(tree, id);
       return found === undefined

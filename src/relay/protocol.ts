@@ -1,8 +1,8 @@
 // ============================================================================
-//  relay/protocol — the `relay@1.2` envelope, its closed sets, and its guards.
+//  relay/protocol — the `relay@1.3` envelope, its closed sets, and its guards.
 //
 //  This module is a direct, dependency-free transcription of the normative
-//  DevTools relay contract (`DEVTOOLS_RELAY.md`, profile `relay@1.2`). It is
+//  DevTools relay contract (`DEVTOOLS_RELAY.md`, profile `relay@1.3`). It is
 //  deliberately written FROM THE SPEC and imports nothing from any host — the
 //  contract's own §1.2 posture is that "a relay implementation is written from
 //  this document; it does not need to read any host's source".
@@ -16,13 +16,13 @@
  * The relay profile this implementation speaks (DEVTOOLS_RELAY §5.1) — "the
  * HIGHEST profile it can serve", not the only one.
  *
- * This is `relay@1.2` because this build uses `attribution.actorClass` (§8.2.1),
- * and a peer that uses a minor's vocabulary while declaring an earlier minor is
+ * This is `relay@1.3` because this build uses `read.nodeJson` (§7.7), and a peer
+ * that uses a minor's vocabulary while declaring an earlier minor is
  * misdescribing itself. §5.1's superset rule is what makes the claim honest in
- * the other direction: a 1.2 peer serves any minor at or below its own, which
+ * the other direction: a 1.3 peer serves any minor at or below its own, which
  * `selectSessionProfile` below turns into a per-session decision.
  */
-export const RELAY_PROFILE = 'relay@1.2';
+export const RELAY_PROFILE = 'relay@1.3';
 
 /**
  * The profiles this build speaks, most-preferred first — the `accepts` array of
@@ -33,7 +33,7 @@ export const RELAY_PROFILE = 'relay@1.2';
  * exactly the population §5.3's backward-compatible minor bump exists to keep
  * serving.
  */
-export const ACCEPTED_PROFILES = ['relay@1.2', 'relay@1.1', 'relay@1.0'] as const;
+export const ACCEPTED_PROFILES = ['relay@1.3', 'relay@1.2', 'relay@1.1', 'relay@1.0'] as const;
 
 /** The envelope field whose presence marks a message as relay traffic (§3.2, §4). */
 export const RELAY_FIELD = '$relay';
@@ -60,6 +60,7 @@ export const REQUEST_TYPES = [
   'read.tree',
   'read.findNodes',
   'read.affordances',
+  'read.nodeJson',
   'apply',
   'subscribe',
   'unsubscribe',
@@ -83,6 +84,58 @@ export const capabilityFor = (type: RequestType): Capability | undefined => {
   return type;
 };
 
+/**
+ * The profile MINOR each request type was introduced at (§4.2's per-minor
+ * annotations).
+ *
+ * This table is what §6.3's second sentence needs to be implementable: "a
+ * capability whose request type was introduced after the session profile MUST
+ * NOT be advertised". While every type this peer served was a `relay@1.0` one
+ * the rule was satisfied by having nothing to filter, so there was no table and
+ * no filter — and the moment a peer advertises a later minor's type, its
+ * absence stops being harmless and starts being a peer that offers a
+ * `relay@1.0` client something that session never had.
+ *
+ * Keyed by request type rather than by capability because that is what both
+ * users need: `hello` filters what it ADVERTISES, and the per-request check
+ * asks about the type in front of it. (`unsubscribe` is gated by the
+ * `subscribe` capability but arrived in the same minor, so the two readings
+ * agree.)
+ */
+export const REQUEST_MINOR: Readonly<Record<RequestType, number>> = {
+  hello: 0,
+  'read.nodeState': 0,
+  'read.bindingValue': 0,
+  'read.renderedDom': 0,
+  'read.tree': 0,
+  'read.findNodes': 0,
+  apply: 0,
+  subscribe: 0,
+  unsubscribe: 0,
+  'read.affordances': 1,
+  'read.nodeJson': 3,
+};
+
+/** The minor a capability's request type arrived at — see {@link REQUEST_MINOR}. */
+export const capabilityMinor = (capability: Capability): number => REQUEST_MINOR[capability];
+
+/**
+ * The subset of `capabilities` that a session at `profile` may be told about
+ * (§6.3).
+ *
+ * An unparseable profile keeps only the `relay@1.0` set: the honest floor for a
+ * session whose minor cannot be established, and never the whole set — guessing
+ * upward is the one direction that can advertise something the client cannot
+ * have negotiated.
+ */
+export const capabilitiesAt = (
+  profile: string | undefined,
+  capabilities: readonly Capability[],
+): Capability[] => {
+  const minor = profile === undefined ? 0 : (parseProfile(profile)?.minor ?? 0);
+  return capabilities.filter((capability) => capabilityMinor(capability) <= minor);
+};
+
 /** The closed refusal-class set (§9.3). */
 export const REFUSAL_CLASSES = [
   'NOT_OPTED_IN',
@@ -93,6 +146,11 @@ export const REFUSAL_CLASSES = [
   'NODE_NOT_FOUND',
   'SLOT_NOT_DECLARED',
   'DECODE_FAILED',
+  // §9.3, since `relay@1.3`: the node is there and the host cannot produce its
+  // canonical wire encoding. Deliberately NOT folded into NODE_NOT_FOUND, which
+  // would be a lie about a node that is plainly present and would send a client
+  // to look somewhere else — the one remedy that cannot help.
+  'ENCODE_FAILED',
   'VALIDATOR_REJECT',
   'POLICY_DENIED',
 ] as const;
@@ -182,6 +240,41 @@ export interface RenderedDom {
 export interface FoundNodes {
   readonly nodeIds: readonly string[];
 }
+
+/**
+ * `read.nodeJson.ok` payload (§7.7, since `relay@1.3`) — the node's own
+ * canonical wire JSON, embedded as a structured object, plus the revision it
+ * was taken at.
+ *
+ * `node` is typed as an opaque record on purpose. It is the HOST's canonical
+ * encoding of whatever vocabulary that page runs, so narrowing it to a shape
+ * declared here would make this build's idea of the format the gate on what a
+ * newer page may say — the opposite of §10.2. What reads it is
+ * `panel/nodeJson`, by path, tolerating anything it does not recognise.
+ */
+export interface NodeJsonRead {
+  readonly node: Readonly<Record<string, unknown>>;
+  /**
+   * The revision the encoding was taken at (§5.4, §7.7). Opaque: compared,
+   * never parsed. This is the token a read-modify-write commit checks against
+   * the current revision before it derives an op from a stale read.
+   */
+  readonly treeRevision: string;
+}
+
+/**
+ * The strings the canonical encoder puts where the wire format cannot carry the
+ * value (`WIRE_FORMAT.md` §2, and §7.7 rule 2 for what a client owes them).
+ *
+ * They arrive verbatim and MUST NOT be round-tripped: a sentinel decodes as the
+ * literal string it looks like, not as the closure it stands for, so an op
+ * carrying one back would replace a live affordance with text that renders and
+ * does nothing.
+ */
+export const SENTINELS = ['<closure>', '<opaque>'] as const;
+
+export const isSentinel = (value: unknown): value is (typeof SENTINELS)[number] =>
+  typeof value === 'string' && (SENTINELS as readonly string[]).includes(value);
 
 /**
  * `apply.ok` payload (§8.3). `treeRevision` is the revision AFTER the op; a
