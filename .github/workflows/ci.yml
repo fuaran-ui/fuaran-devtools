@@ -16,6 +16,12 @@ on:
   pull_request:
     branches: [main]
 
+# Least privilege: this workflow only reads the tree (its own and the corpus
+# sibling) — it publishes nothing and comments nowhere. Stated explicitly so the
+# job never inherits a write-scoped default token.
+permissions:
+  contents: read
+
 jobs:
   build:
     runs-on: ubuntu-latest
@@ -40,8 +46,13 @@ jobs:
         with:
           node-version: 22
 
+      # `--frozen-lockfile` is the point of committing a lockfile: without it pnpm
+      # silently RESOLVES a drifted manifest and installs a dependency set no one
+      # reviewed, so CI certifies a tree the maintainer never built. With it, a
+      # manifest/lockfile disagreement fails HERE, by name, and the fix is to commit
+      # the regenerated lockfile.
       - name: Install
-        run: pnpm install --no-frozen-lockfile
+        run: pnpm install --frozen-lockfile
 
       - name: Format check
         run: pnpm format:check

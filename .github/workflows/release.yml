@@ -56,8 +56,10 @@ jobs:
             exit 1
           fi
 
+      # A RELEASE build resolving a drifted manifest would ship an artefact built
+      # from a dependency set nothing recorded. `--frozen-lockfile` refuses that.
       - name: Install
-        run: pnpm install --no-frozen-lockfile
+        run: pnpm install --frozen-lockfile
 
       - name: Format check
         run: pnpm format:check
