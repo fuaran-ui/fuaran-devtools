@@ -5,10 +5,15 @@
 //  criteria against a host holding a real mutable tree, on the same wiring the
 //  write-side suite uses:
 //
-//   * an undone edit leaves the host's tree BYTE-IDENTICAL to what it was —
-//     asserted on the host's own full tree, property values and all, which is
-//     the strongest available reading of "byte-identically" given the relay
-//     returns no canonical tree;
+//   * apply-then-invert leaves the host's tree BYTE-IDENTICAL to what it was,
+//     for every op the panel can emit — asserted on the host's own full wire
+//     document, property values and nested children included, which is the
+//     strongest reading of "byte-identically" there is;
+//   * the exported document's ops REPLAY: applying them to the document's own
+//     base tree produces the document's own final tree, byte for byte. That is
+//     the session op log's central claim, checked rather than asserted;
+//   * a capture the page cannot serve — refused, or over the size ceiling —
+//     REPORTS, by class and by sentence, instead of inverting approximately;
 //   * a refused op never appears in the trail;
 //   * the exported document's chain verifies against an independent
 //     recomputation, exactly as an ingest would verify it.
@@ -33,18 +38,34 @@ import { describe, expect, it } from 'vitest';
 import { RelayClient, type RelayTransport } from '../src/relay/client.js';
 import { createPagePeer } from '../src/relay/pagePeer.js';
 import type { RelayEnvelope, TreeSnapshot } from '../src/relay/protocol.js';
-import { insertOp, removeNode, updateProp, type TreeOpJson } from '../src/edit/ops.js';
+import {
+  insertOp,
+  moveOp,
+  nudgeOp,
+  removeNode,
+  updateProp,
+  type TreeOpJson,
+} from '../src/edit/ops.js';
 import { Trail } from '../src/trail/recorder.js';
-import { computeHash, GENESIS_PREVIOUS_HASH, type Actor } from '../src/trail/hashChain.js';
-import { canonicalJson } from '../src/trail/canonicalJson.js';
-import { liveHost, node, type LiveNode } from './support/liveHost.js';
+import { computeHash, type Actor } from '../src/trail/hashChain.js';
+import { canonicalJson, type JsonValue } from '../src/trail/canonicalJson.js';
+import { MAX_CAPTURED_TREE_BYTES, type WireReader } from '../src/trail/capture.js';
+import { SESSION_LOG_MARKER, TRAIL_MARKER } from '../src/trail/sessionLog.js';
+import { applyOps, liveHost, node, toWire, type LiveNode } from './support/liveHost.js';
 
 const IDENTITY = { host: 'fuaran-devtools-page-relay', hostVersion: '0.1.0' };
 
-const page = (initial: LiveNode) => {
+const page = (initial: LiveNode, options: { serveNodeJson?: boolean } = {}) => {
   const host = liveHost(initial);
+  // A page that serves no `read.nodeJson` at all — the honest floor, and the
+  // population that still exists: the capability arrived at `relay@1.3`. The
+  // property is DELETED rather than set to `undefined`, because the peer
+  // advertises on `typeof … === 'function'` and the two spellings are the same
+  // fact to it but not to the type system.
+  const surface = { ...host.surface };
+  if (options.serveNodeJson === false) delete surface.getNodeJson;
   let deliver: ((envelope: RelayEnvelope) => void) | undefined;
-  const peer = createPagePeer(host.surface, IDENTITY, {
+  const peer = createPagePeer(surface, IDENTITY, {
     emit: (event) => queueMicrotask(() => deliver?.(event)),
   });
   const transport: RelayTransport = {
@@ -65,16 +86,40 @@ const page = (initial: LiveNode) => {
 
 const tree = (): LiveNode =>
   node('root', 'Box', {}, [
-    node('title', 'Heading', { level: 1, text: 'Quarterly review', variant: 'Standard' }),
-    node('note', 'Callout', { body: 'Provisional.', tone: 'Info' }),
+    node('title', 'Heading', { level: 1, text: 'Quarterly review' }),
+    node('note', 'Callout', { body: 'Provisional.', tone: 'Info' }, [
+      node('detail', 'Markdown', { text: 'Figures unaudited.' }),
+    ]),
+    node('badge', 'Badge', { label: 'draft', variant: 'Neutral' }),
   ]);
 
+/** The host's whole tree as canonical wire bytes — what "byte-identical" means. */
+const wireBytes = (host: ReturnType<typeof page>): string =>
+  canonicalJson(toWire(host.host.current()) as JsonValue);
+
 /**
- * A panel-shaped session: read the tree, propose an op, record it only when the
- * host confirms. This is the `commit` path from `panel.ts`, minus the DOM.
+ * A panel-shaped session: read the tree, capture what the op is about to make
+ * unreadable, propose it, record it only when the host confirms.
+ *
+ * The capture happens through `Trail.prepare`, in the position the extension's
+ * single write route calls it from — before the apply, because after it the
+ * answers are gone.
  */
 const session = (host: ReturnType<typeof page>) => {
-  const trail = new Trail(() => '2020-01-01T00:00:00.000Z');
+  const reader: WireReader = async (nodeId) => {
+    const result = await host.client.readNodeJson(nodeId);
+    if (result.ok) return { ok: true, node: result.value.node };
+    // A page that never advertised the capability has not refused anything, and
+    // telling someone their page said no when it was never asked sends them to
+    // fix the wrong thing. Two spellings of the same fact reach here: the client
+    // refuses locally per §6.4 rather than putting a known-absent capability on
+    // the wire, and a peer that answers anyway says `CAPABILITY_ABSENT`.
+    const absent =
+      result.failure.kind === 'capabilityAbsent' ||
+      (result.failure.kind === 'refusal' && result.failure.refusal.class === 'CAPABILITY_ABSENT');
+    return { ok: false, why: absent ? 'not-offered' : 'refused' };
+  };
+  const trail = new Trail(() => '2020-01-01T00:00:00.000Z', reader);
   trail.noteIdentity({ host: 'test', hostVersion: '0', profile: 'relay@1.0' });
 
   const readTree = async (): Promise<TreeSnapshot> => {
@@ -85,6 +130,7 @@ const session = (host: ReturnType<typeof page>) => {
   };
 
   const propose = async (op: TreeOpJson, reason: string): Promise<boolean> => {
+    await trail.prepare(op);
     const result = await host.client.apply(op, { actor: 'fuaran-devtools', reason });
     if (!result.ok) return false;
     await trail.record(op, reason, result.value.treeRevision);
@@ -141,32 +187,91 @@ const verifyChain = async (document: string): Promise<{ ok: boolean; reason?: st
   return { ok: true };
 };
 
-describe('undo restores the page', () => {
-  it('leaves the host tree byte-identical after undoing a property edit', async () => {
+describe('apply then invert restores the page byte-identically', () => {
+  it('undoes a property edit the session never set before — off the CAPTURED BASE', async () => {
+    // The case the phase exists for. Nothing in the recording knows what
+    // `title.Text` held, so this used to be refused; the base tree captured at
+    // the first edit knows, so it is now exact — first edit and all.
     const host = page(tree());
     await host.client.hello();
     const panel = session(host);
     await panel.readTree();
+    const before = wireBytes(host);
 
-    // The FIRST edit to a field has no recoverable prior value, so the session
-    // sets it once to establish one — which is itself the honest behaviour
-    // being exercised, not a workaround.
-    expect(await panel.propose(updateProp('title', 'Text', 'first'), 'set Text')).toBe(true);
-    const before = JSON.stringify(host.host.current());
-
-    expect(await panel.propose(updateProp('title', 'Text', 'second'), 'set Text')).toBe(true);
-    expect(JSON.stringify(host.host.current())).not.toBe(before);
+    expect(await panel.propose(updateProp('title', 'Text', 'Q3 review'), 'set Text')).toBe(true);
+    expect(wireBytes(host)).not.toBe(before);
 
     expect(await panel.undo()).toBe(true);
-    expect(JSON.stringify(host.host.current())).toBe(before);
+    expect(wireBytes(host)).toBe(before);
   });
 
-  it('leaves the host tree byte-identical after undoing an insert-and-place', async () => {
+  it('undoes an INDEXED, NESTED property edit', async () => {
+    const host = page(
+      node('root', 'Box', {}, [
+        node('grid', 'Grid', {
+          columns: [
+            { label: 'First', width: 2 },
+            { label: 'Second', width: 3 },
+          ],
+        }),
+      ]),
+    );
+    await host.client.hello();
+    const panel = session(host);
+    await panel.readTree();
+    const before = wireBytes(host);
+
+    expect(
+      await panel.propose(updateProp('grid', 'Columns[1].Label', 'Changed'), 'set label'),
+    ).toBe(true);
+    expect(wireBytes(host)).not.toBe(before);
+    expect(await panel.undo()).toBe(true);
+    expect(wireBytes(host)).toBe(before);
+  });
+
+  it('undoes a REMOVAL by putting the captured subtree back where it was', async () => {
+    // `note` carries a child and property values, and sits in the middle of its
+    // siblings. A structural husk appended at the end would satisfy neither
+    // half — which is why this was refused outright before the subtree could be
+    // read.
+    const host = page(tree());
+    await host.client.hello();
+    const panel = session(host);
+    await panel.readTree();
+    const before = wireBytes(host);
+
+    expect(await panel.propose(removeNode('note'), 'remove note')).toBe(true);
+    expect(host.host.current().children.map((child) => child.id)).toEqual(['title', 'badge']);
+
+    expect(await panel.undo()).toBe(true);
+    expect(wireBytes(host)).toBe(before);
+  });
+
+  it('undoes the removal of the LAST sibling, with no redundant reorder', async () => {
+    const host = page(tree());
+    await host.client.hello();
+    const panel = session(host);
+    await panel.readTree();
+    const before = wireBytes(host);
+
+    expect(await panel.propose(removeNode('badge'), 'remove badge')).toBe(true);
+    const inverse = panel.trail.undoOp();
+    expect(inverse?.ok).toBe(true);
+    // A plain append already lands it where it was, so there is no placement
+    // leg: a redundant reorder is a second op in the host's log describing a
+    // change that did not happen.
+    if (inverse?.ok) expect(inverse.op['$type']).toBe('InsertChild');
+
+    expect(await panel.undo()).toBe(true);
+    expect(wireBytes(host)).toBe(before);
+  });
+
+  it('undoes an insert-and-place', async () => {
     const host = page(tree());
     await host.client.hello();
     const panel = session(host);
     const snapshot = await panel.readTree();
-    const before = JSON.stringify(host.host.current());
+    const before = wireBytes(host);
 
     const child = { id: 'heading-9', kind: { $type: 'Heading', level: 2, text: 'New' } };
     const op = insertOp(
@@ -179,26 +284,155 @@ describe('undo restores the page', () => {
       'title',
       'heading-9',
       'note',
+      'badge',
     ]);
 
     expect(await panel.undo()).toBe(true);
-    // Order and content both — the reorder leg is undone by the removal alone,
-    // and this is the assertion that proves it rather than assumes it.
-    expect(JSON.stringify(host.host.current())).toBe(before);
+    expect(wireBytes(host)).toBe(before);
   });
 
-  it('does not offer an undo it cannot honour', async () => {
+  it('undoes a move-and-place', async () => {
     const host = page(tree());
+    await host.client.hello();
+    const panel = session(host);
+    await panel.readTree();
+    const before = wireBytes(host);
+
+    const op = moveOp(
+      ['detail'],
+      { parentId: 'note', placement: { at: 'before', anchor: 'detail' } },
+      'badge',
+    );
+    expect(await panel.propose(op, 'move badge')).toBe(true);
+    expect(wireBytes(host)).not.toBe(before);
+
+    expect(await panel.undo()).toBe(true);
+    expect(wireBytes(host)).toBe(before);
+  });
+
+  it('undoes a reorder', async () => {
+    const host = page(tree());
+    await host.client.hello();
+    const panel = session(host);
+    await panel.readTree();
+    const before = wireBytes(host);
+
+    const op = nudgeOp('root', ['title', 'note', 'badge'], 'badge', -1);
+    expect(op).toBeDefined();
+    expect(await panel.propose(op!, 'nudge badge up')).toBe(true);
+    expect(wireBytes(host)).not.toBe(before);
+
+    expect(await panel.undo()).toBe(true);
+    expect(wireBytes(host)).toBe(before);
+  });
+
+  it('restores the base tree after a whole session of mixed edits, undone in reverse', async () => {
+    // Each inverse is composed against the snapshot from before its own op, so
+    // a session unwinds op by op. Anything less than byte-identical at the end
+    // means one of them was approximate.
+    const host = page(tree());
+    await host.client.hello();
+    const panel = session(host);
+    const snapshot = await panel.readTree();
+    const before = wireBytes(host);
+
+    await panel.propose(updateProp('title', 'Text', 'Q3 review'), 'set Text');
+    await panel.propose(updateProp('note', 'Body', 'Unaudited.'), 'set Body');
+    await panel.propose(
+      insertOp(
+        snapshot.children.map((entry) => entry.id),
+        { parentId: 'root', placement: { at: 'last' } },
+        { id: 'badge-2', kind: { $type: 'Badge', label: 'new', variant: 'Neutral' } },
+      ),
+      'insert a Badge',
+    );
+    await panel.propose(removeNode('note'), 'remove note');
+    expect(wireBytes(host)).not.toBe(before);
+
+    for (let remaining = 4; remaining > 0; remaining -= 1) expect(await panel.undo()).toBe(true);
+
+    expect(wireBytes(host)).toBe(before);
+  });
+});
+
+describe('a capture the page cannot serve reports rather than inverts', () => {
+  it('names the missing capability when the page serves no read.nodeJson', async () => {
+    const host = page(tree(), { serveNodeJson: false });
+    await host.client.hello();
+    const panel = session(host);
+    await panel.readTree();
+
+    expect(await panel.propose(updateProp('title', 'Text', 'Q3'), 'set Text')).toBe(true);
+    expect(await panel.undo()).toBe(false);
+    const blocked = panel.trail.view().undoBlocked;
+    expect(blocked?.class).toBe('NO_PRIOR_VALUE');
+    expect(blocked?.message).toContain('read.nodeJson');
+  });
+
+  it('cannot put back a removal it could not read, and says which node', async () => {
+    const host = page(tree(), { serveNodeJson: false });
     await host.client.hello();
     const panel = session(host);
     await panel.readTree();
 
     expect(await panel.propose(removeNode('note'), 'remove note')).toBe(true);
     expect(await panel.undo()).toBe(false);
+    const blocked = panel.trail.view().undoBlocked;
+    expect(blocked?.class).toBe('NO_CAPTURED_SUBTREE');
+    expect(blocked?.message).toContain('note');
     // The op stays in the trail: it happened, and the record is of what
     // happened, not of what can be reversed.
     expect(panel.trail.view().applied).toBe(1);
-    expect(panel.trail.view().undoBlocked).toContain('cannot be restored');
+  });
+
+  it('REFUSES a tree over the ceiling rather than truncating it, and reports the size', async () => {
+    // A page whose canonical encoding is over the bound. Nothing is truncated:
+    // a truncated tree would answer "what did this field hold" with silence for
+    // exactly the nodes that fell off the end, and nothing in the document
+    // would distinguish that silence from a field that was genuinely absent.
+    const host = page(
+      node('root', 'Box', {}, [
+        node('title', 'Heading', { level: 1, text: 'Quarterly review' }),
+        node('bulk', 'Markdown', { text: 'x'.repeat(MAX_CAPTURED_TREE_BYTES) }),
+      ]),
+    );
+    await host.client.hello();
+    const panel = session(host);
+    await panel.readTree();
+
+    expect(await panel.propose(updateProp('title', 'Text', 'Q3'), 'set Text')).toBe(true);
+    expect(await panel.undo()).toBe(false);
+    const blocked = panel.trail.view().undoBlocked;
+    expect(blocked?.class).toBe('NO_PRIOR_VALUE');
+    expect(blocked?.message).toContain(String(MAX_CAPTURED_TREE_BYTES));
+
+    // And the document says the same thing rather than presenting an absence.
+    const document = JSON.parse(await panel.trail.exportDocument()) as Record<string, unknown>;
+    expect(document['$log']).toBe(TRAIL_MARKER);
+    expect((document['integrity'] as Record<string, unknown>)['base']).toBe('absent');
+    expect(String((document['integrity'] as Record<string, unknown>)['reason'])).toContain(
+      String(MAX_CAPTURED_TREE_BYTES),
+    );
+  });
+
+  it('withholds the captured base once another writer has been here', async () => {
+    // The base was true when it was read, and a `changed` event says only that
+    // the tree moved — never what it moved. So it can no longer answer for a
+    // field this session did not itself set.
+    const host = page(tree());
+    await host.client.hello();
+    const panel = session(host);
+    await panel.readTree();
+
+    expect(await panel.propose(updateProp('title', 'Text', 'Q3'), 'set Text')).toBe(true);
+    panel.trail.externalChange('r-99');
+    await panel.readTree();
+    expect(await panel.propose(updateProp('badge', 'Label', 'final'), 'set Label')).toBe(true);
+
+    expect(await panel.undo()).toBe(false);
+    const blocked = panel.trail.view().undoBlocked;
+    expect(blocked?.class).toBe('NO_PRIOR_VALUE');
+    expect(blocked?.message).toContain('another writer');
   });
 });
 
@@ -208,15 +442,15 @@ describe('refusals never enter the trail', () => {
     await host.client.hello();
     const panel = session(host);
     await panel.readTree();
-    const before = JSON.stringify(host.host.current());
+    const before = wireBytes(host);
 
     expect(await panel.propose(removeNode('root'), 'remove the root')).toBe(false);
     expect(await panel.propose(updateProp('title', 'NotAField', 'x'), 'set NotAField')).toBe(false);
     expect(await panel.propose(updateProp('ghost', 'Text', 'x'), 'set Text')).toBe(false);
 
     expect(panel.trail.view().recorded).toBe(0);
-    expect(JSON.stringify(host.host.current())).toBe(before);
-    expect(JSON.parse(panel.trail.exportDocument())['ops']).toEqual([]);
+    expect(wireBytes(host)).toBe(before);
+    expect(JSON.parse(await panel.trail.exportDocument())['ops']).toEqual([]);
   });
 
   it('records nothing for a policy denial', async () => {
@@ -241,21 +475,24 @@ describe('refusals never enter the trail', () => {
     expect(await panel.propose(updateProp('title', 'Text', 'refused'), 'set Text')).toBe(false);
     expect(await panel.propose(updateProp('title', 'Text', 'two'), 'set Text')).toBe(true);
 
-    const ops = JSON.parse(panel.trail.exportDocument())['ops'] as Record<string, unknown>[];
+    const document = await panel.trail.exportDocument();
+    const ops = JSON.parse(document)['ops'] as Record<string, unknown>[];
     expect(ops.map((op) => op['seq'])).toEqual([1, 2]);
-    expect(await verifyChain(panel.trail.exportDocument())).toEqual({ ok: true });
+    expect(await verifyChain(document)).toEqual({ ok: true });
   });
 });
 
-describe('the exported document verifies', () => {
-  it('passes an independent chain recomputation over a real session', async () => {
+describe('the exported document is a session op log, and replays', () => {
+  it('carries both trees, wears the session-log marker, and its ops REPLAY', async () => {
+    // The format's central claim, checked rather than asserted: apply the
+    // document's own ops to the document's own base and the bytes must be the
+    // document's own final tree.
     const host = page(tree());
     await host.client.hello();
     const panel = session(host);
     const snapshot = await panel.readTree();
 
     await panel.propose(updateProp('title', 'Text', 'Q3 review'), 'set Text');
-    await panel.propose(updateProp('note', 'Body', 'Unaudited.'), 'set Body');
     await panel.propose(
       insertOp(
         snapshot.children.map((entry) => entry.id),
@@ -264,13 +501,40 @@ describe('the exported document verifies', () => {
       ),
       'insert a Badge',
     );
+    await panel.propose(removeNode('note'), 'remove note');
 
-    const document = panel.trail.exportDocument();
+    const document = await panel.trail.exportDocument();
+    const parsed = JSON.parse(document) as Record<string, unknown>;
+
+    expect(parsed['$log']).toBe(SESSION_LOG_MARKER);
+    // The appendix is gone: it existed to explain what was absent, and nothing
+    // is absent.
+    expect(parsed['integrity']).toBeUndefined();
+    expect(parsed['structure']).toBeUndefined();
+
+    const replayed = applyOps(
+      parsed['base'] as Record<string, unknown>,
+      (parsed['ops'] as { op: Record<string, unknown> }[]).map((entry) => entry.op),
+    );
+    expect(canonicalJson(replayed as JsonValue)).toBe(canonicalJson(parsed['tree'] as JsonValue));
+  });
+
+  it('seeds the chain at the captured base tree hash, and the chain verifies', async () => {
+    const host = page(tree());
+    await host.client.hello();
+    const panel = session(host);
+    await panel.readTree();
+
+    await panel.propose(updateProp('title', 'Text', 'Q3 review'), 'set Text');
+    await panel.propose(updateProp('badge', 'Label', 'final'), 'set Label');
+
+    const document = await panel.trail.exportDocument();
     expect(await verifyChain(document)).toEqual({ ok: true });
 
     const parsed = JSON.parse(document) as Record<string, unknown>;
-    expect((parsed['ops'] as unknown[]).length).toBe(3);
-    expect(parsed['baseHash']).toBe(GENESIS_PREVIOUS_HASH);
+    // Not genesis: the ops are bound to the tree they were composed against.
+    expect(parsed['baseHash']).toMatch(/^[0-9a-f]{64}$/);
+    expect(parsed['baseHash']).not.toBe('0'.repeat(64));
     // Every op is attributed, and the attribution is inside the hash.
     for (const op of parsed['ops'] as Record<string, unknown>[])
       expect(op['actor']).toEqual({ kind: 'human', id: 'devtools' });
@@ -283,18 +547,16 @@ describe('the exported document verifies', () => {
     await panel.readTree();
     await panel.propose(updateProp('title', 'Text', 'Q3 review'), 'set Text');
 
-    const tampered = panel.trail
-      .exportDocument()
-      .replace(
-        '{"kind":"human","id":"devtools"}',
-        '{"kind":"agent","model":"m","version":"","id":"e"}',
-      );
+    const tampered = (await panel.trail.exportDocument()).replace(
+      '{"kind":"human","id":"devtools"}',
+      '{"kind":"agent","model":"m","version":"","id":"e"}',
+    );
     const verdict = await verifyChain(tampered);
     expect(verdict.ok).toBe(false);
     expect(verdict.reason).toContain('hash mismatch');
   });
 
-  it('excludes an undone op from the document', async () => {
+  it('excludes an undone op from the document, and still replays', async () => {
     const host = page(tree());
     await host.client.hello();
     const panel = session(host);
@@ -304,9 +566,40 @@ describe('the exported document verifies', () => {
     await panel.propose(updateProp('title', 'Text', 'two'), 'set Text');
     expect(await panel.undo()).toBe(true);
 
-    const document = panel.trail.exportDocument();
-    expect((JSON.parse(document)['ops'] as unknown[]).length).toBe(1);
+    const document = await panel.trail.exportDocument();
+    const parsed = JSON.parse(document) as Record<string, unknown>;
+    expect((parsed['ops'] as unknown[]).length).toBe(1);
     expect(document).not.toContain('"two"');
     expect(await verifyChain(document)).toEqual({ ok: true });
+    // The final tree is read at export, so it is the tree the SHORTENED prefix
+    // builds — which is what makes capturing it there rather than after each op
+    // correct at every cursor position.
+    const replayed = applyOps(
+      parsed['base'] as Record<string, unknown>,
+      (parsed['ops'] as { op: Record<string, unknown> }[]).map((entry) => entry.op),
+    );
+    expect(canonicalJson(replayed as JsonValue)).toBe(canonicalJson(parsed['tree'] as JsonValue));
+  });
+
+  it('does NOT wear the session-log marker when another writer interrupted', async () => {
+    // Both trees are in hand and the claim is still false: an edit this session
+    // did not make sits between them.
+    const host = page(tree());
+    await host.client.hello();
+    const panel = session(host);
+    await panel.readTree();
+
+    await panel.propose(updateProp('title', 'Text', 'Q3'), 'set Text');
+    panel.trail.externalChange('r-99');
+
+    const parsed = JSON.parse(await panel.trail.exportDocument()) as Record<string, unknown>;
+    expect(parsed['$log']).toBe(TRAIL_MARKER);
+    expect(String((parsed['integrity'] as Record<string, unknown>)['reason'])).toContain(
+      'Another writer',
+    );
+    // Both trees are still published — the document is less than a session log,
+    // not less than it was.
+    expect(parsed['base']).not.toBeNull();
+    expect(parsed['tree']).not.toBeNull();
   });
 });

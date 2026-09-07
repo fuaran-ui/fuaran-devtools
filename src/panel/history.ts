@@ -10,10 +10,14 @@
 //  styling one:
 //
 //   * It never shows an enabled Undo that would fail. When the last edit has no
-//     recoverable inverse, the button is disabled and the REASON is on screen —
-//     "a removed subtree cannot be restored", not a greyed rectangle.
-//   * It never claims the export is a replayable session log. The line beside
-//     the button says what the document carries and what it does not.
+//     recoverable inverse, the button is disabled and both the CLASS and the
+//     REASON are on screen — "NO_PRIOR_VALUE: … the page refused to encode its
+//     root as canonical wire JSON", not a greyed rectangle.
+//   * It claims the export is a replayable session log only when it is one. The
+//     line beside the button is composed from what the recording actually holds
+//     — whether the base tree was captured, and whether another writer has been
+//     here — so it says what that document will carry rather than a fixed
+//     sentence that was true when it was written.
 //   * It says out loud that a recording does not survive a reload, beside the
 //     button that would have saved it. That is where the information is worth
 //     something; in a README it is worth nothing at the moment it is needed.
@@ -76,8 +80,17 @@ export const renderHistory = (context: HistoryContext): HTMLElement => {
   const last = view.entries[view.entries.length - 1];
   if (last !== undefined) strip.appendChild(el('span', 'history-last', `last: ${last.reason}`));
 
-  if (view.undoBlocked !== undefined)
-    strip.appendChild(el('span', 'history-why', view.undoBlocked));
+  // The CLASS beside the sentence, exactly as an inline refusal renders one: the
+  // prose says what happened, and the class is the part a developer matches
+  // against the contract rather than against this panel's phrasing. A page that
+  // will not serve a tree read and a batch this build has no inverse for are
+  // both "cannot undo", and they are not the same problem.
+  if (view.undoBlocked !== undefined) {
+    const why = el('span', 'history-why');
+    why.appendChild(el('span', 'refusal-class', view.undoBlocked.class));
+    why.appendChild(el('span', 'refusal-message', ` ${view.undoBlocked.message}`));
+    strip.appendChild(why);
+  }
 
   if (view.interrupted)
     strip.appendChild(
@@ -89,18 +102,37 @@ export const renderHistory = (context: HistoryContext): HTMLElement => {
       ),
     );
 
-  if (view.applied > 0)
-    strip.appendChild(
-      el(
-        'span',
-        'history-why',
-        'Export writes the ops and their attributed hash chain. It carries no base or final tree ' +
-          '— this relay profile cannot read one — so it is a provenance record, not a replayable ' +
-          'session. The recording is lost on reload; export first.',
-      ),
-    );
+  if (view.applied > 0) strip.appendChild(el('span', 'history-why', exportNote(view)));
 
   return strip;
+};
+
+/**
+ * What the export will carry, said before it is pressed.
+ *
+ * Stated from what is KNOWN at render time and no further. The base tree either
+ * was captured or was not, and that is settled; another writer either has been
+ * here or has not. The final tree is read at export, so the strongest honest
+ * form is "and the final one at export" — a promise about what will be
+ * attempted, never about what will succeed.
+ */
+const exportNote = (view: TrailView): string => {
+  const tail = ' The recording is lost on reload; export first.';
+  if (!view.baseTree.ok)
+    return (
+      `Export writes the ops and their attributed hash chain. It carries no base tree — ` +
+      `${view.baseTree.reason} — so it is a provenance record, not a replayable session.${tail}`
+    );
+  if (view.interrupted)
+    return (
+      'Export writes the base tree, the ops and their attributed hash chain. Another writer has ' +
+      'changed this page, so those ops do not by themselves build the tree you see, and the ' +
+      `document says so rather than claiming to be a replayable session.${tail}`
+    );
+  return (
+    'Export writes the base tree captured at your first edit, the final one at export, and the ' +
+    `ops between them with their attributed hash chain — a replayable session log.${tail}`
+  );
 };
 
 /**

@@ -42,6 +42,52 @@ export const node = (
 
 const clone = (tree: LiveNode): LiveNode => JSON.parse(JSON.stringify(tree)) as LiveNode;
 
+/**
+ * A node's WIRE form: the kind OBJECT with its values, children nested inside
+ * it, and the style block at the node level.
+ *
+ * Deliberately a different projection from `project` in the surface below,
+ * because the two are different documents about the same node — the structural
+ * snapshot reports a kind DISCRIMINATOR and no values at all. A fake that served
+ * one from the other would build in the equivalence the peer must not assume.
+ */
+export const toWire = (live: LiveNode): Record<string, unknown> => ({
+  id: live.id,
+  kind: {
+    ...live.kind,
+    ...(live.children.length === 0 ? {} : { children: live.children.map(toWire) }),
+  },
+  ...(live.style === undefined ? {} : { style: live.style }),
+});
+
+/**
+ * The inverse of {@link toWire} — the shape a host holds, from the shape the
+ * wire carries.
+ *
+ * It exists because an `InsertChild` can carry a WHOLE SUBTREE: the panel's undo
+ * of a removal re-inserts the wire document it captured before the removal, and
+ * a host that read only a top-level `children` would silently insert the root of
+ * that subtree and drop everything under it — putting back a husk, which is the
+ * failure the removal's inverse exists to avoid. Modelling it here is what makes
+ * the byte-identical round trip an assertion rather than a hope.
+ */
+export const fromWire = (node: Record<string, unknown>): LiveNode => {
+  const kind = { ...((node['kind'] as Record<string, unknown> | undefined) ?? {}) };
+  const nested = kind['children'];
+  delete kind['children'];
+  const style = node['style'];
+  return {
+    id: String(node['id']),
+    kind,
+    children: Array.isArray(nested)
+      ? nested.map((child) => fromWire(child as Record<string, unknown>))
+      : [],
+    ...(typeof style === 'object' && style !== null
+      ? { style: style as Record<string, unknown> }
+      : {}),
+  };
+};
+
 const find = (tree: LiveNode, id: string): LiveNode | undefined => {
   if (tree.id === id) return tree;
   for (const child of tree.children) {
@@ -182,12 +228,18 @@ const applyTo = (tree: LiveNode, op: Record<string, unknown>): Failure | undefin
       const parent = find(tree, String(op['parentId']));
       if (parent === undefined)
         return { code: 'NODE-MISSING', message: `No node '${String(op['parentId'])}'.` };
-      const child = op['child'] as LiveNode | undefined;
-      if (child === undefined || typeof child.id !== 'string')
+      const child = op['child'] as Record<string, unknown> | undefined;
+      if (child === undefined || typeof child['id'] !== 'string')
         return { code: 'CHILD-SHAPE', message: 'InsertChild needs a child node.' };
-      if (ids(tree).includes(child.id))
-        return { code: 'FUARAN-APPLY-DUPLICATE-ID', message: `Duplicate node id '${child.id}'.` };
-      parent.children.push({ id: child.id, kind: child.kind, children: child.children ?? [] });
+      if (ids(tree).includes(child['id']))
+        return {
+          code: 'FUARAN-APPLY-DUPLICATE-ID',
+          message: `Duplicate node id '${String(child['id'])}'.`,
+        };
+      // Decoded from the WIRE shape, so a child carrying a whole subtree under
+      // `kind.children` arrives with that subtree — which is exactly what an
+      // undo of a removal sends.
+      parent.children.push(fromWire(child));
       return undefined;
     }
     case 'RemoveNode': {
@@ -231,6 +283,27 @@ const applyTo = (tree: LiveNode, op: Record<string, unknown>): Failure | undefin
     default:
       return { code: 'UNKNOWN_DU_CASE', message: `Unknown TreeOp case '${String(op['$type'])}'.` };
   }
+};
+
+/**
+ * Replay ops over a WIRE document and return the wire document they produce.
+ *
+ * The session op log's central claim is that its ops build its tree, and this is
+ * what lets a test CHECK that rather than assert it: the same apply this fake
+ * host runs, over a document's own base tree rather than over a live one. It
+ * throws on a leg that does not apply, because a replay that quietly stopped
+ * half way would compare two trees and report a difference with no cause.
+ */
+export const applyOps = (
+  base: Record<string, unknown>,
+  ops: readonly Record<string, unknown>[],
+): Record<string, unknown> => {
+  const live = fromWire(base);
+  for (const op of ops) {
+    const failure = applyTo(live, op);
+    if (failure !== undefined) throw new Error(`replay failed: ${failure.message}`);
+  }
+  return toWire(live);
 };
 
 const KNOWN_OPS = new Set([
@@ -286,24 +359,6 @@ export const liveHost = (
     for (const listener of listeners) listener(change);
   };
 
-  /**
-   * The node's WIRE form: the kind OBJECT with its values, children nested
-   * inside it, and the style block at the node level.
-   *
-   * Deliberately a different projection from `project` below, because the two
-   * are different documents about the same node — the structural snapshot
-   * reports a kind DISCRIMINATOR and no values at all. A fake that served one
-   * from the other would build in the equivalence the peer must not assume.
-   */
-  const wireJson = (live: LiveNode): Record<string, unknown> => ({
-    id: live.id,
-    kind: {
-      ...live.kind,
-      ...(live.children.length === 0 ? {} : { children: live.children.map(wireJson) }),
-    },
-    ...(live.style === undefined ? {} : { style: live.style }),
-  });
-
   const project = (live: LiveNode): Record<string, unknown> => ({
     id: live.id,
     // The relay reports the kind DISCRIMINATOR, not the kind object.
@@ -329,7 +384,7 @@ export const liveHost = (
       const found = find(tree, id);
       return found === undefined
         ? { error: `Node '${id}' not found in tree.` }
-        : (JSON.parse(JSON.stringify(wireJson(found))) as unknown);
+        : (JSON.parse(JSON.stringify(toWire(found))) as unknown);
     },
     getNodeState: (id) => {
       const found = find(tree, id);

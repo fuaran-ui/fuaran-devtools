@@ -40,19 +40,23 @@ const started = (): Trail => {
   return trail;
 };
 
-const parse = (trail: Trail): Record<string, unknown> =>
-  JSON.parse(trail.exportDocument()) as Record<string, unknown>;
+// Asynchronous because the export reads the FINAL tree at the moment it is
+// assembled — one read at the one place the document is written, rather than
+// after each confirmed op where a missed site would publish a final tree the
+// recorded ops do not build.
+const parse = async (trail: Trail): Promise<Record<string, unknown>> =>
+  JSON.parse(await trail.exportDocument()) as Record<string, unknown>;
 
-const opsOf = (trail: Trail): Record<string, unknown>[] =>
-  parse(trail)['ops'] as Record<string, unknown>[];
+const opsOf = async (trail: Trail): Promise<Record<string, unknown>[]> =>
+  (await parse(trail))['ops'] as Record<string, unknown>[];
 
 describe('the session boundary', () => {
-  it('takes the first observed tree as the base, not the tree at the first edit', () => {
+  it('takes the first observed tree as the base, not the tree at the first edit', async () => {
     const trail = new Trail(clock);
     const first = tree();
     trail.observeTree(first, 'r-0');
     trail.observeTree(leaf('root', 'Box', []), 'r-1');
-    const structure = parse(trail)['structure'] as Record<string, unknown>;
+    const structure = (await parse(trail))['structure'] as Record<string, unknown>;
     expect((structure['base'] as TreeSnapshot).children).toHaveLength(2);
     expect((structure['final'] as TreeSnapshot).children).toHaveLength(0);
   });
@@ -70,7 +74,7 @@ describe('the session boundary', () => {
     const view = trail.view();
     expect(view.recorded).toBe(0);
     expect(view.interrupted).toBe(false);
-    expect(parse(trail)['structure']).toEqual({
+    expect((await parse(trail))['structure']).toEqual({
       shape: expect.any(String),
       base: null,
       final: null,
@@ -84,7 +88,7 @@ describe('the trail records applied ops', () => {
     const op = updateProp('a', 'Text', 'one');
     await trail.record(op, 'set Text', 'r-1');
 
-    const [first] = opsOf(trail);
+    const [first] = await opsOf(trail);
     expect(first?.['seq']).toBe(1);
     expect(first?.['actor']).toEqual({ kind: 'human', id: 'devtools' });
     expect(first?.['prevHash']).toBe(GENESIS_PREVIOUS_HASH);
@@ -98,7 +102,7 @@ describe('the trail records applied ops', () => {
     const trail = started();
     await trail.record(updateProp('a', 'Text', 'one'), 'set Text');
     await trail.record(updateProp('b', 'Text', 'two'), 'set Text');
-    const ops = opsOf(trail);
+    const ops = await opsOf(trail);
     expect(ops).toHaveLength(2);
     expect(ops[1]?.['prevHash']).toBe(ops[0]?.['hash']);
     expect(ops[1]?.['seq']).toBe(2);
@@ -114,7 +118,7 @@ describe('undo, redo, and the redo tail', () => {
 
     // The document claims its ops built its tree; an undone op in the list
     // would falsify that.
-    expect(opsOf(trail)).toHaveLength(1);
+    expect(await opsOf(trail)).toHaveLength(1);
     expect(trail.view().undone).toBe(1);
   });
 
@@ -132,13 +136,13 @@ describe('undo, redo, and the redo tail', () => {
   it('restores the entry on redo, keeping its original hash', async () => {
     const trail = started();
     await trail.record(insertChild('root', { id: 'h', kind: { $type: 'Heading' } }), 'insert');
-    const before = opsOf(trail);
+    const before = await opsOf(trail);
     trail.confirmUndo();
     expect(trail.redoOp()).toBeDefined();
     trail.confirmRedo();
     // Same position, same predecessor, so the same hash — a redo is not a new
     // op and must not be recorded as one.
-    expect(opsOf(trail)).toEqual(before);
+    expect(await opsOf(trail)).toEqual(before);
   });
 
   it('truncates the redo tail on a new edit, and re-chains against the survivor', async () => {
@@ -150,7 +154,7 @@ describe('undo, redo, and the redo tail', () => {
     const replacement = updateProp('b', 'Text', 'branch');
     await trail.record(replacement, 'set Text');
 
-    const ops = opsOf(trail);
+    const ops = await opsOf(trail);
     expect(ops).toHaveLength(2);
     expect(trail.view().undone).toBe(0);
     // The re-chained op links to op 1, NOT to the op that was undone. Getting
@@ -162,11 +166,15 @@ describe('undo, redo, and the redo tail', () => {
   });
 
   it('offers no undo for an op with no recoverable inverse, and says why', async () => {
+    // This `Trail` was built with no reader, so nothing could be captured — and
+    // the refusal says THAT rather than the old flat "a removal cannot be
+    // undone", which stopped being true when the subtree became readable.
     const trail = started();
     await trail.record(removeNode('a'), 'remove a');
     const view = trail.view();
     expect(view.undoable).toBeUndefined();
-    expect(view.undoBlocked).toContain('cannot be restored');
+    expect(view.undoBlocked?.class).toBe('NO_CAPTURED_SUBTREE');
+    expect(view.undoBlocked?.message).toContain('no copy of the removed subtree');
   });
 });
 
@@ -179,7 +187,8 @@ describe('when another writer changes the same page', () => {
     const view = trail.view();
     expect(view.interrupted).toBe(true);
     expect(view.undoable).toBeUndefined();
-    expect(view.undoBlocked).toContain('did not do');
+    expect(view.undoBlocked?.class).toBe('EXTERNAL_CHANGE');
+    expect(view.undoBlocked?.message).toContain('did not do');
     // And it stays put even if asked.
     trail.confirmUndo();
     expect(trail.view().applied).toBe(1);
@@ -204,7 +213,7 @@ describe('when another writer changes the same page', () => {
 
     // Composed against the tree as it is NOW, so its inverse is sound.
     expect(trail.view().undoable?.seq).toBe(2);
-    expect(opsOf(trail)).toHaveLength(2);
+    expect(await opsOf(trail)).toHaveLength(2);
     trail.confirmUndo();
     // ...but the barrier still holds for what came before it.
     expect(trail.view().undoable).toBeUndefined();
@@ -212,10 +221,10 @@ describe('when another writer changes the same page', () => {
 });
 
 describe('the exported document', () => {
-  it('names itself, seeds at genesis, and carries no trees', async () => {
+  it('names itself, seeds at genesis, and carries no trees when none was read', async () => {
     const trail = started();
     await trail.record(updateProp('a', 'Text', 'x'), 'set Text', 'r-1');
-    const document = parse(trail);
+    const document = await parse(trail);
     expect(document['$log']).toBe(TRAIL_MARKER);
     expect(document['baseHash']).toBe(GENESIS_PREVIOUS_HASH);
     expect(document['base']).toBeNull();
@@ -226,7 +235,7 @@ describe('the exported document', () => {
   it('records the session boundary it observed', async () => {
     const trail = started();
     await trail.record(updateProp('a', 'Text', 'x'), 'set Text', 'r-4');
-    expect(parse(trail)['session']).toEqual({
+    expect((await parse(trail))['session']).toEqual({
       host: 'h',
       hostVersion: '1',
       profile: 'relay@1.0',
@@ -242,6 +251,6 @@ describe('the exported document', () => {
     const two = started();
     for (const trail of [one, two])
       await trail.record(updateProp('a', 'Text', 'x'), 'set Text', 'r-1');
-    expect(one.exportDocument()).toBe(two.exportDocument());
+    expect(await one.exportDocument()).toBe(await two.exportDocument());
   });
 });

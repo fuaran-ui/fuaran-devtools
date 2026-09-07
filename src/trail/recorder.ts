@@ -32,6 +32,43 @@
 //  (a value that is not a number, a root with no parent) never reach the relay
 //  at all, so they were never candidates.
 //
+//  ── What is captured, and exactly when ─────────────────────────────────────
+//
+//  Two wire-JSON reads make an undo exact rather than best-effort, and both are
+//  taken at the only moment that makes them true:
+//
+//   * the BASE TREE, at the session's first edit and BEFORE that edit is
+//     applied. It is the page as the session found it, so it answers "what did
+//     this field hold before I touched it" for every field the recording never
+//     set. Attempted once: a base re-read after some edits had landed would
+//     describe a tree the recording did not start from, and would restore values
+//     this session itself wrote.
+//   * a REMOVED SUBTREE, immediately before the removal that destroys it. After
+//     the op there is nothing left to read, which is precisely why the removal
+//     used to have no inverse at all.
+//
+//  Both go through `prepare`, which the write route calls before it proposes an
+//  op — so the ordering is a property of there being one route, not of every
+//  caller remembering. A capture that fails does not block the edit: the edit is
+//  the user's, the capture is a convenience the page may decline, and what
+//  changes is that the undo says why rather than that the edit does not happen.
+//
+//  The FINAL tree is read at export instead of after each op. There is one
+//  export and three places an op is confirmed (an edit, an undo, a redo), and a
+//  final tree captured at all but one of them is a tree the recorded ops do not
+//  build — silently. One call site cannot be missed.
+//
+//  ── When the captured base stops being usable ──────────────────────────────
+//
+//  A `changed` event says the tree moved, never how. So once another writer has
+//  edited the page, the captured base can no longer answer for a field it did
+//  not itself set — the value it holds may have been overwritten by an edit this
+//  session cannot see. The base is therefore withheld from the inverse
+//  derivation from that moment on, and the undo refuses by name instead of
+//  restoring a value that was true an hour ago. Note the barrier below already
+//  refuses every entry recorded BEFORE the change, so what this covers is
+//  exactly the entries recorded after it.
+//
 //  ── Undo, redo, and the redo tail ──────────────────────────────────────────
 //
 //  The log holds every op recorded; the CURSOR says how many of them are
@@ -73,15 +110,18 @@
 import type { TreeSnapshot } from '../relay/protocol.js';
 import type { TreeOpJson } from '../edit/ops.js';
 import { canonicalJson, type JsonValue } from './canonicalJson.js';
-import { computeHashOf, DEVTOOLS_ACTOR, GENESIS_PREVIOUS_HASH, type Actor } from './hashChain.js';
-import { inverseOf, type Inverse } from './inverse.js';
+import { computeHashOf, DEVTOOLS_ACTOR, type Actor } from './hashChain.js';
 import {
-  relayIntegrity,
-  trailAppendix,
-  writeTrail,
-  type LoggedOp,
-  type SessionNote,
-} from './sessionLog.js';
+  capture,
+  chainSeed,
+  NO_WIRE_READER,
+  NOT_ATTEMPTED,
+  STALE,
+  type Capture,
+  type WireReader,
+} from './capture.js';
+import { flattenOps, inverseOf, type Inverse, type InverseRefusal } from './inverse.js';
+import { writeTrailDocument, type LoggedOp, type SessionNote } from './sessionLog.js';
 
 export interface TrailEntry {
   readonly seq: number;
@@ -96,6 +136,12 @@ export interface TrailEntry {
   readonly reason: string;
   /** The structural tree from immediately before this op landed. */
   readonly treeBefore: TreeSnapshot;
+  /**
+   * Wire JSON read immediately before this op, keyed by node id — today, the
+   * subtrees it was about to remove. A failed capture is kept rather than
+   * dropped, so the undo's refusal can name the page's own reason.
+   */
+  readonly captured: ReadonlyMap<string, Capture>;
 }
 
 /** What the panel needs to render the history surface. */
@@ -106,11 +152,24 @@ export interface TrailView {
   readonly entries: readonly TrailEntry[];
   /** Present when an undo is on offer. */
   readonly undoable: TrailEntry | undefined;
-  /** Present when an undo is NOT on offer but an entry exists — why not. */
-  readonly undoBlocked: string | undefined;
+  /**
+   * Present when an undo is NOT on offer but an entry exists — why not, as a
+   * class and a message. The class is what makes the panel able to say which
+   * KIND of "no" this is, in the shape the relay's own refusals take.
+   */
+  readonly undoBlocked: InverseRefusal | undefined;
   readonly redoable: TrailEntry | undefined;
   /** True once a change this session did not cause has landed. */
   readonly interrupted: boolean;
+  /**
+   * The session's base tree, or why there is none — so the surface can say what
+   * an export will and will not carry BEFORE it is pressed.
+   *
+   * The final tree is not here, and cannot be: it is read at export, so at
+   * render time nothing truthful can be said about it beyond that it will be
+   * attempted.
+   */
+  readonly baseTree: Capture;
 }
 
 export interface PageIdentity {
@@ -128,6 +187,7 @@ const systemClock: Clock = () => new Date().toISOString();
 
 export class Trail {
   private readonly clock: Clock;
+  private readonly reader: WireReader;
   private log: TrailEntry[] = [];
   private cursor = 0;
   /** Undo may not walk back past this — see the external-change posture. */
@@ -135,13 +195,18 @@ export class Trail {
   private interrupted = false;
   private base: TreeSnapshot | undefined;
   private latest: TreeSnapshot | undefined;
+  /** The session's base tree in wire form, or why there is none. */
+  private baseCapture: Capture = NOT_ATTEMPTED;
+  /** Captures taken by `prepare` for the op that has not been recorded yet. */
+  private pending = new Map<string, Capture>();
   private identity: PageIdentity = UNKNOWN_PAGE;
   private startRevision = '';
   private endRevision = '';
   private startedAt: string | undefined;
 
-  constructor(clock: Clock = systemClock) {
+  constructor(clock: Clock = systemClock, reader: WireReader = NO_WIRE_READER) {
     this.clock = clock;
+    this.reader = reader;
   }
 
   /**
@@ -167,6 +232,46 @@ export class Trail {
   /** The tree an op about to be sent will be composed against. */
   get currentTree(): TreeSnapshot | undefined {
     return this.latest;
+  }
+
+  /** The session's base tree in wire form, or why there is none. */
+  get baseTree(): Capture {
+    return this.baseCapture;
+  }
+
+  /**
+   * Read what `op` is about to make unreadable, BEFORE it is proposed.
+   *
+   * Called by the write route, so every op — a person's and a program's alike —
+   * is prepared the same way. It never throws and never blocks the edit: a page
+   * that will not serve a read has declined a convenience, not vetoed a
+   * mutation, and the consequence lands where it belongs, on the undo that then
+   * says why it cannot run.
+   */
+  async prepare(op: TreeOpJson): Promise<void> {
+    // Cleared first, so each op's captures are its own. Carrying a capture
+    // forward from a REFUSED op would read correctly right up until the session
+    // edited that node in between, at which point the entry would hold a subtree
+    // that is a version behind — and putting that back is the fabrication this
+    // whole module is arranged against. A second read costs one round trip.
+    this.pending = new Map();
+    const root = this.latest?.id;
+    // Nothing has been read, so there is no root to ask about and `record` will
+    // decline this op anyway.
+    if (root === undefined) return;
+
+    // Attempted ONCE, at the first edit. A later attempt would capture a tree
+    // this session had already changed, and the values it holds would then be
+    // this session's own writes presented as what the page started with.
+    if (!this.baseCapture.ok && this.baseCapture.why === 'not-attempted')
+      this.baseCapture = await capture(await this.reader(root));
+
+    for (const leg of flattenOps(op)) {
+      if (leg['$type'] !== 'RemoveNode') continue;
+      const target = leg['target'];
+      if (typeof target !== 'string' || this.pending.has(target)) continue;
+      this.pending.set(target, await capture(await this.reader(target)));
+    }
   }
 
   /**
@@ -197,7 +302,11 @@ export class Trail {
 
     this.log = this.log.slice(0, this.cursor);
     const previous = this.log[this.log.length - 1];
-    const prevHash = previous?.hash ?? GENESIS_PREVIOUS_HASH;
+    // Seeded at the captured base tree's hash, and at genesis only when there is
+    // no base tree — the session-log family's own rule, so a document this
+    // recording emits verifies under the same procedure as one the reference
+    // exporter emits.
+    const prevHash = previous?.hash ?? chainSeed(this.baseCapture);
     const seq = this.cursor + 1;
     const opJson = canonicalJson(op as unknown as JsonValue);
     const hash = await computeHashOf(prevHash, op as unknown as JsonValue, seq, actor);
@@ -211,7 +320,9 @@ export class Trail {
       op,
       reason,
       treeBefore: tree,
+      captured: this.pending,
     });
+    this.pending = new Map();
     this.cursor = this.log.length;
     if (revision !== undefined) this.endRevision = revision;
     return true;
@@ -225,6 +336,14 @@ export class Trail {
       entry.op,
       entry.treeBefore,
       this.log.slice(0, this.cursor - 1).map((recorded) => recorded.op),
+      {
+        // Withheld once another writer has been here: the base was true when it
+        // was read, and a `changed` event does not say what it stopped being
+        // true about. The per-op captures stay — each was taken immediately
+        // before the op it belongs to, so nothing can have moved in between.
+        base: this.interrupted ? STALE : this.baseCapture,
+        captured: entry.captured,
+      },
     );
   }
 
@@ -265,6 +384,8 @@ export class Trail {
     this.interrupted = false;
     this.base = undefined;
     this.latest = undefined;
+    this.baseCapture = NOT_ATTEMPTED;
+    this.pending = new Map();
     this.startedAt = undefined;
     this.startRevision = '';
     this.endRevision = '';
@@ -283,13 +404,18 @@ export class Trail {
         undoTarget === undefined
           ? undefined
           : undo === undefined
-            ? 'Another writer changed this page after that edit, so undoing it here could revert ' +
-              'work this session did not do.'
+            ? {
+                class: 'EXTERNAL_CHANGE',
+                message:
+                  'Another writer changed this page after that edit, so undoing it here could ' +
+                  'revert work this session did not do.',
+              }
             : undo.ok
               ? undefined
-              : undo.reason,
+              : { class: undo.class, message: undo.message },
       redoable: this.log[this.cursor],
       interrupted: this.interrupted,
+      baseTree: this.baseCapture,
     };
   }
 
@@ -304,8 +430,24 @@ export class Trail {
     }));
   }
 
+  /**
+   * The tree as it is NOW, read at export.
+   *
+   * Read here rather than after each confirmed op because there is one export
+   * and three confirmations — an edit, an undo and a redo — and a final tree
+   * captured at all but one of them is a tree the recorded ops do not build,
+   * with nothing in the document to say so. It is also correct at every cursor
+   * position: an undo is itself an applied op, so what the page holds after one
+   * is exactly what the shortened applied prefix builds.
+   */
+  private async captureFinal(): Promise<Capture> {
+    const root = this.latest?.id;
+    if (root === undefined) return NOT_ATTEMPTED;
+    return capture(await this.reader(root));
+  }
+
   /** The whole document, ready to download. */
-  exportDocument(): string {
+  async exportDocument(): Promise<string> {
     const session: SessionNote = {
       host: this.identity.host,
       hostVersion: this.identity.hostVersion,
@@ -315,14 +457,14 @@ export class Trail {
       startRevision: this.startRevision,
       endRevision: this.endRevision,
     };
-    return writeTrail(
-      this.loggedOps(),
-      trailAppendix({
-        integrity: relayIntegrity(),
-        session,
-        baseStructure: (this.base ?? null) as unknown as JsonValue | null,
-        finalStructure: (this.latest ?? null) as unknown as JsonValue | null,
-      }),
-    );
+    return writeTrailDocument({
+      ops: this.loggedOps(),
+      base: this.baseCapture,
+      final: await this.captureFinal(),
+      interrupted: this.interrupted,
+      session,
+      baseStructure: (this.base ?? null) as unknown as JsonValue | null,
+      finalStructure: (this.latest ?? null) as unknown as JsonValue | null,
+    });
   }
 }

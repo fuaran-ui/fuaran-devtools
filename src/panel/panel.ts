@@ -43,6 +43,7 @@ import {
 import { loadWireSchema, WIRE_SCHEMA_FILE, type DerivedSchema } from './schemaSource.js';
 import { downloadDocument, renderHistory } from './history.js';
 import { Trail } from '../trail/recorder.js';
+import type { WireRead } from '../trail/capture.js';
 import { TRAIL_FILENAME } from '../trail/sessionLog.js';
 import { Dispatch, DEVTOOLS_ACTOR } from '../dispatch/dispatch.js';
 import { DEFAULT_ACTOR_CLASS, type ActorClass } from '../relay/protocol.js';
@@ -95,12 +96,31 @@ let lastRevision: string | undefined;
 let nodeJson: NodeJsonRead | undefined;
 const collapsed = new Set<string>();
 /**
+ * Read one node's canonical wire JSON FOR THE RECORDING.
+ *
+ * Distinct from the editor's `readNodeJson` below, which collapses every
+ * failure into `undefined` because the editor's answer to all of them is the
+ * same degraded mode. The recording needs the distinction: "this page serves no
+ * `read.nodeJson`" and "the page refused" are different things to tell someone
+ * whose undo will not run, and one of them names a fix.
+ */
+const readForTrail = async (nodeId: string): Promise<WireRead> => {
+  if (!capabilities.includes('read.nodeJson')) return { ok: false, why: 'not-offered' };
+  try {
+    const read = await connection.request<NodeJsonRead>('readNodeJson', { nodeId });
+    return { ok: true, node: read.node };
+  } catch {
+    return { ok: false, why: 'refused' };
+  }
+};
+
+/**
  * The attributed record of what this session has applied to this page.
  *
  * One per panel, reset on navigation: a trail carried across a navigation would
  * address node ids belonging to a different tree.
  */
-const trail = new Trail();
+const trail = new Trail(undefined, readForTrail);
 
 // ─── Status ─────────────────────────────────────────────────────────
 
@@ -375,6 +395,17 @@ const editContext = (node: NodeSnapshot): EditContext => ({
 
 // ─── Recording ──────────────────────────────────────────────────────
 
+/**
+ * Write the document out.
+ *
+ * Asynchronous because the final tree is read AT EXPORT — one read, at the one
+ * moment the document is assembled, rather than after each confirmed op where a
+ * missed call site would emit a final tree the recorded ops do not build.
+ */
+const exportTrail = async (): Promise<void> => {
+  downloadDocument(TRAIL_FILENAME, await trail.exportDocument());
+};
+
 const renderHistoryBar = (): void => {
   historyBar.replaceChildren(
     renderHistory({
@@ -382,7 +413,7 @@ const renderHistoryBar = (): void => {
       canApply: capabilities.includes('apply'),
       undo: () => void undoLast(),
       redo: () => void redoNext(),
-      exportTrail: () => downloadDocument(TRAIL_FILENAME, trail.exportDocument()),
+      exportTrail: () => void exportTrail(),
       reset: () => {
         trail.reset();
         if (tree !== undefined) trail.observeTree(tree, lastRevision);

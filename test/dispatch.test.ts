@@ -355,7 +355,7 @@ describe('the exported session distinguishes its channels', () => {
     await s.refresh();
     await s.dispatch.submit(ASSISTANT, setTitle('Three'), 'assistant edit');
 
-    const document = s.trail.exportDocument();
+    const document = await s.trail.exportDocument();
     const parsed = JSON.parse(document) as { ops: ExportedOp[] };
 
     expect(parsed.ops.map((op) => op.actor)).toEqual([DEVTOOLS_ACTOR, AGENT, ASSISTANT]);
@@ -375,7 +375,10 @@ describe('the exported session distinguishes its channels', () => {
     await s.ready();
     await s.dispatch.submit(AGENT, setTitle('One'), 'agent edit');
 
-    const parsed = JSON.parse(s.trail.exportDocument()) as { baseHash: string; ops: ExportedOp[] };
+    const parsed = JSON.parse(await s.trail.exportDocument()) as {
+      baseHash: string;
+      ops: ExportedOp[];
+    };
     // Relabel an agent's op as a person's, exactly as a document under dispute
     // would be tampered with, and leave every hash where it was.
     const forged = JSON.stringify({

@@ -123,8 +123,18 @@ export class Dispatch {
    * the host decides FIRST, the record follows. Recording optimistically and
    * unwinding on a refusal would mean the trail briefly claimed an edit that
    * never happened, and there is no moment at which that is safe to export.
+   *
+   * One thing happens BEFORE the host decides, and it has to: the trail reads
+   * what this op is about to make unreadable — the session's base tree at the
+   * first edit, and any subtree the op removes. After the apply, both answers
+   * are gone. Putting it here rather than in each caller is the same argument
+   * this whole module makes: there is one write route, so a program's dispatch
+   * and a person's edit are prepared identically because they are the same call.
+   * A capture that fails does not stop the edit; it changes what the undo can
+   * later say, which is where the consequence belongs.
    */
   async submit(actor: Actor, op: TreeOpJson, reason: string): Promise<DispatchOutcome> {
+    await this.trail.prepare(op);
     const result = await this.route.apply(op, reason, actorClassOf(actor));
     if (!result.ok) return { ...result, recorded: false };
     const recorded = await this.trail.record(op, reason, result.treeRevision, actor);

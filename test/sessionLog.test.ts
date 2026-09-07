@@ -20,18 +20,18 @@
 import { describe, expect, it } from 'vitest';
 
 import {
-  relayIntegrity,
-  RELAY_INTEGRITY_REASON,
   SESSION_LOG_MARKER,
   STRUCTURE_SHAPE_NOTE,
-  trailAppendix,
   TRAIL_MARKER,
   TRAIL_VERSION,
   writeSessionLog,
-  writeTrail,
+  writeTrailDocument,
   type LoggedOp,
+  type SessionNote,
+  type TrailDocumentInput,
 } from '../src/trail/sessionLog.js';
 import { GENESIS_PREVIOUS_HASH } from '../src/trail/hashChain.js';
+import { capture, NOT_ATTEMPTED, type Capture, type WireNode } from '../src/trail/capture.js';
 
 const HASH_A = 'a'.repeat(64);
 const HASH_B = 'b'.repeat(64);
@@ -145,24 +145,75 @@ describe('the session-op-log envelope', () => {
   });
 });
 
-describe("the extension's own document", () => {
-  const written = writeTrail(
+const SESSION: SessionNote = {
+  host: 'a-host',
+  hostVersion: '1.0.0',
+  profile: 'relay@1.0',
+  startedAt: '2020-01-01T00:00:00.000Z',
+  endedAt: '2020-01-01T00:01:00.000Z',
+  startRevision: 'r-1',
+  endRevision: 'r-3',
+};
+
+const BASE_NODE: WireNode = { id: 'root', kind: { $type: 'Box', children: [] } };
+const FINAL_NODE: WireNode = {
+  id: 'root',
+  kind: { $type: 'Box', children: [{ id: 'title', kind: { $type: 'Heading', text: 'Q3' } }] },
+};
+
+const document_ = (
+  overrides: Partial<TrailDocumentInput> & { base: Capture; final: Capture },
+): string =>
+  writeTrailDocument({
     ops,
-    trailAppendix({
-      integrity: relayIntegrity(),
-      session: {
-        host: 'a-host',
-        hostVersion: '1.0.0',
-        profile: 'relay@1.0',
-        startedAt: '2020-01-01T00:00:00.000Z',
-        endedAt: '2020-01-01T00:01:00.000Z',
-        startRevision: 'r-1',
-        endRevision: 'r-3',
-      },
-      baseStructure: { id: 'root', kind: 'Box', bindings: [], childIds: [], children: [] },
-      finalStructure: null,
-    }),
-  );
+    interrupted: false,
+    session: SESSION,
+    baseStructure: { id: 'root', kind: 'Box', bindings: [], childIds: [], children: [] },
+    finalStructure: null,
+    ...overrides,
+  });
+
+describe('the complete document IS a session op log', () => {
+  it('wears the session-log marker, carries both trees, and drops the appendix', async () => {
+    const base = await capture({ ok: true, node: BASE_NODE });
+    const final = await capture({ ok: true, node: FINAL_NODE });
+    const written = document_({ base, final });
+
+    expect(written.startsWith(`{"$log":"${SESSION_LOG_MARKER}",`)).toBe(true);
+    // The appendix explained what was absent and stood in for it. Nothing is
+    // absent, so all three of its members go — the document is the format, not
+    // a document shaped like it with extra members a reader of that format
+    // knows nothing about.
+    expect(written).not.toContain('"integrity"');
+    expect(written).not.toContain('"session"');
+    expect(written).not.toContain('"structure"');
+    expect(JSON.parse(written)).toMatchObject({ base: BASE_NODE, tree: FINAL_NODE });
+  });
+
+  it('seeds the chain at the BASE TREE HASH, not at genesis', async () => {
+    // The session-log family's own rule: `sha256Hex` over the base tree's
+    // canonical bytes. A chain seeded at the base hash binds the ops to the tree
+    // they were composed against.
+    const base = await capture({ ok: true, node: BASE_NODE });
+    const final = await capture({ ok: true, node: FINAL_NODE });
+    if (!base.ok) throw new Error('the fixture must capture');
+    expect(document_({ base, final })).toContain(`"baseHash":"${base.hash}"`);
+    expect(base.hash).toMatch(/^[0-9a-f]{64}$/);
+  });
+
+  it('re-encodes the embedded tree to the exact bytes it hashed', async () => {
+    // The document must not publish one encoding while the chain seed names
+    // another — that fails verification for a reason nothing in the file
+    // explains.
+    const base = await capture({ ok: true, node: BASE_NODE });
+    const final = await capture({ ok: true, node: FINAL_NODE });
+    if (!base.ok) throw new Error('the fixture must capture');
+    expect(document_({ base, final })).toContain(`,"base":${base.json},`);
+  });
+});
+
+describe("the extension's own document, when it cannot be a session log", () => {
+  const written = document_({ base: NOT_ATTEMPTED, final: NOT_ATTEMPTED });
 
   it('does NOT wear the session-op-log marker', () => {
     // The document cannot carry a base or final tree, so wearing the marker of
@@ -193,7 +244,40 @@ describe("the extension's own document", () => {
     expect(written).toContain('"chainSeed":"genesis"');
     expect(written).toContain('"base":"absent"');
     expect(written).toContain('"tree":"absent"');
-    expect(written).toContain(RELAY_INTEGRITY_REASON.slice(0, 60));
+    expect(written).toContain('nothing was edited in this session');
+  });
+
+  it('names the page as the cause when the page refused the read', async () => {
+    const refused = await capture({ ok: false, why: 'refused' });
+    expect(document_({ base: refused, final: refused })).toContain('refused to encode its root');
+  });
+
+  it('carries the trees it DID capture, and seeds at the base hash regardless', async () => {
+    // A half-capture is not nothing: the base tree still binds the chain, and
+    // the note says which half is missing rather than presenting both as absent.
+    const base = await capture({ ok: true, node: BASE_NODE });
+    const final = await capture({ ok: false, why: 'not-offered' });
+    if (!base.ok) throw new Error('the fixture must capture');
+    const half = document_({ base, final });
+    expect(half.startsWith(`{"$log":"${TRAIL_MARKER}",`)).toBe(true);
+    expect(half).toContain(`"baseHash":"${base.hash}"`);
+    expect(half).toContain('"base":"present"');
+    expect(half).toContain('"tree":"absent"');
+    expect(half).toContain('"chainSeed":"baseHash"');
+  });
+
+  it('refuses the session-log marker when another writer interrupted the session', async () => {
+    // Both trees are in hand and the claim is still false: an edit this session
+    // did not make sits between them, so the recorded ops do not build the
+    // final tree.
+    const base = await capture({ ok: true, node: BASE_NODE });
+    const final = await capture({ ok: true, node: FINAL_NODE });
+    const interrupted = document_({ base, final, interrupted: true });
+    expect(interrupted.startsWith(`{"$log":"${TRAIL_MARKER}",`)).toBe(true);
+    expect(interrupted).toContain('Another writer changed this page');
+    // Both trees are still published — the document is less than a session log,
+    // not less than it was.
+    expect(JSON.parse(interrupted)).toMatchObject({ base: BASE_NODE, tree: FINAL_NODE });
   });
 
   it('labels the structural snapshots so they cannot be read as wire JSON', () => {

@@ -156,16 +156,29 @@ The panel contributes no apply engine — that absence is a stated property, not
 undo is composed as an ordinary tree-op and sent through the page's own gated apply path. The host
 applies it, the host may refuse it, and the record moves only once the host has confirmed.
 
-Which means some edits genuinely cannot be undone here, and the panel says which rather than
-offering an undo that turns out to be a lie:
+The undo is **exact** rather than best-effort, because the recording captures the trees it needs at
+the one moment each is still readable: the whole tree as canonical wire JSON at your first edit of a
+session, and a subtree immediately before the removal that destroys it. `read.nodeJson` asked for the
+root returns the whole tree, so "what did this field hold before I touched it" is a question the
+recording can answer for every field — including one nobody in the session ever set.
 
-| Edit            | Undoable                                                                                                                                                                                                                              |
-| --------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| a property edit | only once this session knows what was there — an earlier edit to the same field, or the value a node was inserted with. This profile cannot read a property value, so the state before your first edit to a field was never knowable. |
-| an insert       | yes — the panel minted the child, so it knows what to remove                                                                                                                                                                          |
-| a removal       | **no** — the subtree was never readable as wire JSON, and re-inserting a husk would put back something the page never had                                                                                                             |
-| a move          | yes — the recorded snapshot names the old parent and the old sibling order                                                                                                                                                            |
-| a reorder       | yes — the recorded snapshot names the old order                                                                                                                                                                                       |
+| Edit            | Undoable                                                                                                                                                                |
+| --------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| a property edit | yes — against an earlier edit to the same field, the value a node was inserted with, or the captured base tree. Indexed and nested paths (`Columns[0].Label`) included. |
+| an insert       | yes — the panel minted the child, so it knows what to remove                                                                                                            |
+| a removal       | yes — the captured subtree goes back, with its children and property values, in the position the snapshot recorded                                                      |
+| a move          | yes — the recorded snapshot names the old parent and the old sibling order                                                                                              |
+| a reorder       | yes — the recorded snapshot names the old order                                                                                                                         |
+
+What remains genuinely un-undoable is what the **page** would not let the recording read: a page that
+serves no `read.nodeJson`, a read the host refused, a tree over the recording's 2 MiB ceiling — and a
+page another writer has since changed, because a change event says the tree moved and never what it
+moved. In each case Undo is disabled and the refusal **class** is shown beside the sentence
+(`NO_PRIOR_VALUE`, `NO_CAPTURED_SUBTREE`, `EXTERNAL_CHANGE`), the shape the relay's own refusals take,
+because "the page would not serve a tree read" and "this build has no inverse for that op" are
+different problems with different next actions. Over the ceiling the tree is refused rather than
+truncated: a truncated tree answers with silence for exactly the nodes that fell off the end, and
+nothing in the document would distinguish that from a field that was genuinely absent.
 
 History is linear. Undoing then editing discards what was undone, exactly as an op log does.
 
@@ -185,22 +198,35 @@ navigation, a reload, or the tab closing. **Nothing is persisted**, so an un-exp
 gone. That is a deliberate trade: persisting it needs a storage permission, and this extension's
 manifest requests none at all. The panel says so beside the Export button.
 
-### What the exported document is, and what it is not
+### What the exported document is
 
-The export is byte-shaped after the **session op log** the Fuaran playground writes — the same field
-names, the same order, the same canonical encoding of every embedded document, the same chain. It
-carries a different marker, `fuaran-devtools-op-trail`, and the reason is worth being exact about.
+When the recording holds both trees, the export **is** the session op log the Fuaran playground
+writes: the same marker, the same field names in the same order, the same canonical encoding of every
+embedded document, the same chain — and the same central claim, that **its ops build its tree**. The
+chain is seeded at the base tree's hash rather than at the genesis hash, which is what binds the ops
+to the tree they were composed against, and there is no appendix, because there is nothing left for
+one to explain.
 
-A session op log's central claim is that **its ops build its tree**: it carries a base tree, the ops,
-and the final tree, and a reader checks the claim by replaying them. This extension can honour every
-part of that except the two trees, because this recording captures none. The structural reads answer
-what the tree is structurally, and `treeRevision` is an opaque token a client must not parse; the
-wire-JSON read is taken at focus, for the node being edited, and discarded at the next selection.
-Nothing takes it at session start or at export. Without a base tree there is also no base hash, so
-the chain is seeded at the genesis hash instead — a statement about this recorder rather than about
-the contract, which is worth being exact about because it changes what the honest fix is.
+```json
+{
+  "$log": "fuaran-session-op-log",
+  "version": 1,
+  "baseHash": "9f04…0c92",
+  "base": { "id": "root", "kind": { … } },
+  "ops": [{ "seq": 1, "actor": { "kind": "human", "id": "devtools" }, "prevHash": "…", "hash": "…", "op": { … } }],
+  "tree": { "id": "root", "kind": { … } }
+}
+```
 
-So the document says so, in the document:
+### … and when it is not that
+
+Three things can stop the document making that claim, and the document says which. The page may serve
+no `read.nodeJson`, or refuse the read, or hold a tree over the ceiling — and even with both trees
+read perfectly, **another writer** may have edited the page mid-session, in which case the recorded
+ops do not by themselves build the final tree however complete the capture was.
+
+Then the document carries its own marker, `fuaran-devtools-op-trail`, and an `integrity` note saying
+in words which half is missing and why, naming the cause the page gave:
 
 ```json
 {
@@ -208,7 +234,7 @@ So the document says so, in the document:
   "version": 1,
   "baseHash": "0000…0000",
   "base": null,
-  "ops": [{ "seq": 1, "actor": { "kind": "human", "id": "devtools" }, "prevHash": "…", "hash": "…", "op": { … } }],
+  "ops": [ … ],
   "tree": null,
   "integrity": { "base": "absent", "tree": "absent", "chainSeed": "genesis", "reason": "…" },
   "session": { "host": "…", "profile": "relay@1.3", "startedAt": "…", "startRevision": "…", … },
@@ -222,12 +248,12 @@ absence from whichever gate happens to trip first. With its own marker, a pipeli
 session log rejects it on the envelope check — immediately, and before anything downstream has
 assumed the trees are there.
 
-Everything else is deliberately identical, so the day this contract gains a wire-JSON read the change
-is: capture the two trees, seed the chain at the base hash, change the marker, drop the appendix. The
-three additions sit **after** `tree` precisely so the shared prefix diffs cleanly against a real
-session log. `structure` is the honest substitute for the two trees: the relay's own structural
-snapshots, in a shape nobody can mistake for wire JSON, since its `kind` is a discriminator name and
-its nodes carry no properties at all.
+The shared six-field prefix is byte-identical between the two forms, and the three additions sit
+**after** `tree` precisely so that prefix diffs cleanly against a real session log. `structure` is the
+honest substitute for a missing tree: the relay's own structural snapshots, in a shape nobody can
+mistake for wire JSON, since its `kind` is a discriminator name and its nodes carry no properties at
+all. Whatever the recording did manage to read is still published — a half-capture is not nothing, and
+a captured base tree still seeds the chain.
 
 ## Security posture
 
