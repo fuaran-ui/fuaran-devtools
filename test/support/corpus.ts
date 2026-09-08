@@ -91,6 +91,22 @@ export const readChainCorpus = (): ChainCorpus =>
 export interface CorpusFixture {
   readonly id: string;
   readonly kind: 'relay-exchange' | 'relay-refusal' | 'relay-event';
+  /**
+   * The PEER SHAPE this fixture addresses (DEVTOOLS_RELAY §12.2, since
+   * `relay@1.4`) — `'page'` or `'upstream'`; absent means `'page'`.
+   *
+   * Since §6.5 the contract describes two peer shapes, and a page-tree peer can
+   * never answer an `"upstream"` fixture at any version: `treeSource` is by
+   * construction absent from its handshake, and a runner asserting "every
+   * declared field is present" is right to fail it. §12.3 is what a runner owes
+   * a shape it cannot present — out of reach, with a reason, never a pass and
+   * never a failure.
+   *
+   * This extension builds both shapes, so it serves both; the field is read
+   * here so the `SERVED` table can be checked against what the corpus declares
+   * rather than against what someone remembered.
+   */
+  readonly peer?: string;
   readonly requestFile?: string;
   readonly responseFile?: string;
   readonly eventFile?: string;

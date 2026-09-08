@@ -1,5 +1,5 @@
 // ============================================================================
-//  relay/client — the `relay@1.3` CLIENT PEER.
+//  relay/client — the `relay@1.4` CLIENT PEER.
 //
 //  Issues requests and correlates responses. Runs in the extension's content
 //  script, which shares the page's `window` for `postMessage` purposes while
@@ -259,6 +259,13 @@ export class RelayClient {
           surfaceVersion: String(payload['surfaceVersion'] ?? 'unknown'),
           profile: payload['profile'],
           capabilities: capabilities.filter((c): c is string => typeof c === 'string'),
+          // §6.5, since `relay@1.4`. Carried only when the peer sent a string:
+          // absence is meaningful (it means `page`), so it is preserved as
+          // absence rather than defaulted here — `treeSourceOf` is the one
+          // place that reading is made, so there is one place to change it.
+          ...(typeof payload['treeSource'] === 'string'
+            ? { treeSource: payload['treeSource'] }
+            : {}),
           treeRevision: String(payload['treeRevision'] ?? ''),
         };
       },

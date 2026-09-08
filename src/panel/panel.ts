@@ -77,6 +77,18 @@ let selected: string | undefined;
  */
 let selectedPath: readonly string[] = [];
 let capabilities: readonly string[] = [];
+/**
+ * Where the connected peer says its tree lives (DEVTOOLS_RELAY §6.5).
+ *
+ * `'page'` until a handshake says otherwise, which is the wire's own default
+ * and what every peer before `relay@1.4` meant. The panel branches on it in
+ * exactly one place — `refresh` — because §6.4 is unchanged: `capabilities` is
+ * still what decides what may be asked for. What this decides is what the panel
+ * SHOWS when the tree reads are absent, which is a presentation question the
+ * capability list cannot answer: "not offered" and "not here" look identical
+ * through it, and only one of them has a reason worth telling.
+ */
+let treeSource = 'page';
 let picking = false;
 /** The node picked up for a move, if any. */
 let held: string | undefined;
@@ -147,6 +159,12 @@ const renderStatus = (status: StatusResult): void => {
       status.host,
       status.hostVersion === undefined ? undefined : `v${status.hostVersion}`,
       status.profile,
+      // §6.5: shown only when the peer declared something other than the
+      // default, so a page-tree peer's status line is unchanged — the same
+      // reasoning that keeps the field off its handshake.
+      status.treeSource === undefined || status.treeSource === 'page'
+        ? undefined
+        : `tree ${status.treeSource}`,
       `surface ${status.surfaceVersion ?? 'unknown'}`,
       `rev ${status.treeRevision ?? '—'}`,
     ]
@@ -514,6 +532,147 @@ const fillGeometry = async (nodeId: string): Promise<void> => {
 
 const round = (value: number): string => (Math.round(value * 10) / 10).toString();
 
+// ─── A page whose tree is upstream (§6.5) ───────────────────────────
+//
+// The panel's ordinary view is built on `read.tree`, and a peer that declares
+// `treeSource: "upstream"` does not offer it — not because the host chose to
+// withhold it, but because the tree is on the other side of a channel that has
+// no way yet to carry a question and match an answer to it.
+//
+// The wrong thing to show for that is the same "read.tree not offered" empty
+// state a narrow page-tree host gets: it is true and it is useless, because it
+// names no reason and suggests no end. The right thing is what §6.5 makes
+// sayable — this page's tree is elsewhere, here is what CAN be read, and here
+// is each thing that cannot with the refusal class you would actually get.
+
+/**
+ * The entry points an upstream-tree peer does not offer today, each with the
+ * class it answers with (§6.4, §9.3) and why.
+ *
+ * Named rather than hidden, deliberately. A capability list is a fact about one
+ * peer at one moment, and a panel that simply omits what is missing teaches a
+ * reader that this contract has no such entry point — which is exactly the
+ * confusion §10.1 draws `CAPABILITY_ABSENT` and `UNKNOWN_MESSAGE` apart to
+ * prevent. The type exists; this peer does not offer it yet.
+ */
+const UPSTREAM_PENDING: readonly { readonly capability: string; readonly why: string }[] = [
+  { capability: 'read.tree', why: 'the structural snapshot is held by the upstream host' },
+  { capability: 'read.nodeState', why: "a node's kind, bindings and children come from the tree" },
+  { capability: 'read.bindingValue', why: 'slot resolution runs where the tree and its sources are' },
+  { capability: 'read.findNodes', why: 'a kind search is a question about the tree' },
+  { capability: 'read.nodeJson', why: "only the upstream host's own encoder may produce this (§7.7)" },
+  { capability: 'apply', why: 'the edit is decoded, validated and policy-checked upstream (§8.1)' },
+  { capability: 'subscribe', why: 'a change subscription is a subscription to the tree' },
+];
+
+/** The one node-level read an upstream-tree peer can genuinely serve (§7.4). */
+const upstreamDetail = async (nodeId: string): Promise<void> => {
+  cardPane.replaceChildren();
+
+  const head = el('div', 'card-head');
+  head.appendChild(el('span', 'card-kind', 'rendered element'));
+  head.appendChild(el('span', 'card-id', nodeId));
+  cardPane.appendChild(head);
+
+  const geometry = el('section', 'section');
+  geometry.id = 'geometry';
+  geometry.appendChild(el('h2', 'section-title', 'rendered'));
+  geometry.appendChild(el('p', 'muted', '…'));
+  cardPane.appendChild(geometry);
+
+  const absent = el('section', 'section');
+  absent.appendChild(el('h2', 'section-title', 'not available on this page'));
+  for (const entry of UPSTREAM_PENDING) {
+    if (capabilities.includes(entry.capability)) continue;
+    absent.appendChild(definition(entry.capability, `CAPABILITY_ABSENT — ${entry.why}`));
+  }
+  absent.appendChild(
+    el(
+      'p',
+      'muted',
+      'These are absent because this peer holds no tree, not because the entry points do not ' +
+        'exist. It advertises what it can serve, and the set grows when its channel can carry a ' +
+        'question and match an answer to it.',
+    ),
+  );
+  cardPane.appendChild(absent);
+
+  await fillGeometry(nodeId);
+};
+
+/**
+ * The tree pane for an upstream-tree page: the elements the renderer MARKED, in
+ * document order, from the DOM rather than from any tree.
+ *
+ * Presented as what it is and never as a tree — no kinds, no bindings, no
+ * nesting, and a footer that says so. §6.1 permits the marker as "a heuristic
+ * hint about where to look", which is precisely this use of it, and the honest
+ * framing matters more here than anywhere else in the panel: a flat list that
+ * LOOKED like a tree view would be a reconstruction the reader could not tell
+ * from the real one, which is the same defect §6.5 rule 2 forbids on the wire.
+ */
+const showUpstreamPage = async (): Promise<void> => {
+  treePane.replaceChildren();
+  let nodeIds: readonly string[] = [];
+  try {
+    const listed = await connection.request<{ readonly nodeIds: readonly string[] }>(
+      'listRendered',
+    );
+    nodeIds = listed.nodeIds;
+  } catch {
+    // The content script is the one thing between the panel and the page here;
+    // if it did not answer there is nothing to list and nothing to guess.
+    nodeIds = [];
+  }
+
+  if (nodeIds.length === 0) {
+    treePane.appendChild(
+      emptyState(
+        'No marked elements',
+        'This page declares its tree is upstream, and nothing in its DOM carries a rendered-node marker yet.',
+      ),
+    );
+    cardPane.replaceChildren(
+      emptyState(
+        'Tree is upstream',
+        'The session tree for this page lives on the server; the browser holds a renderer applying pushed patches.',
+      ),
+    );
+    return;
+  }
+
+  const list = el('div', 'rows');
+  for (const nodeId of nodeIds) {
+    const item = el('div', 'row');
+    item.dataset['nodeId'] = nodeId;
+    item.style.paddingLeft = '8px';
+    item.appendChild(el('span', 'twisty', ''));
+    item.appendChild(el('span', 'id', nodeId));
+    item.addEventListener('click', () => {
+      selected = nodeId;
+      for (const row of Array.from(list.children))
+        row.classList.toggle('selected', row === item);
+      void upstreamDetail(nodeId);
+    });
+    item.addEventListener('mouseenter', () => {
+      void connection.request('highlight', { nodeId }).catch(() => undefined);
+    });
+    list.appendChild(item);
+  }
+  treePane.appendChild(list);
+  treePane.appendChild(
+    el('div', 'tree-footer', `${nodeIds.length} marked element(s) — DOM order, not a tree`),
+  );
+
+  cardPane.replaceChildren(
+    emptyState(
+      'Tree is upstream',
+      'The session tree lives on the server; this page holds a renderer applying pushed patches, so the tree reads are not offered here.',
+      'Select a marked element to read its live geometry through read.renderedDom.',
+    ),
+  );
+};
+
 // ─── Selection ──────────────────────────────────────────────────────
 
 const select = async (nodeId: string): Promise<void> => {
@@ -567,6 +726,7 @@ const refresh = async (): Promise<void> => {
     const status = await connection.request<StatusResult>('status');
     renderStatus(status);
     capabilities = status.capabilities ?? [];
+    treeSource = status.treeSource ?? 'page';
     pickButton.disabled = status.state !== 'connected';
     trail.noteIdentity({
       host: status.host ?? '',
@@ -608,6 +768,19 @@ const refresh = async (): Promise<void> => {
     }
 
     if (!capabilities.includes('read.tree')) {
+      // §6.5. Two peers reach this line and they need different things said.
+      // A page-tree peer that does not offer `read.tree` has chosen not to,
+      // and "not offered" is the whole truth. An upstream-tree peer is not
+      // withholding anything — its tree is on the far side of a channel — and
+      // it has a real, narrower view to show instead.
+      tree = undefined;
+      selected = undefined;
+      crumbBar.replaceChildren();
+      if (treeSource === 'upstream') {
+        await showUpstreamPage();
+        return;
+      }
+      renderTree();
       cardPane.replaceChildren(
         emptyState('read.tree not offered', 'This page exposes no whole-tree read.'),
       );

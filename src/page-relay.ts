@@ -10,7 +10,7 @@
 //  What it exposes is EXACTLY what the page already exposed. `window.__fuaran`
 //  is registered by the host itself, only in a debug build, and is already
 //  reachable by any script on the page — including the browser console, which
-//  is what it was built for. The peer wraps it in the `relay@1.3` envelope so
+//  is what it was built for. The peer wraps it in the `relay@1.4` envelope so
 //  a structured client can use it; it adds no entry point the page did not
 //  already have. That now includes the host's own policy-gated `apply` and its
 //  change subscription, which are surface methods like any other (§11.3).
@@ -33,6 +33,7 @@
 //  with it, and is the one the host opted into.
 // ============================================================================
 
+import { isServerDrivenPage, serverDrivenSurface } from './inspect/serverDriven.js';
 import { acceptsMessageEvent, isRelayEnvelope, type RelayEnvelope } from './relay/protocol.js';
 import { createPagePeer, EXTENSION_PEER_HOST, type HostSurface } from './relay/pagePeer.js';
 
@@ -44,12 +45,26 @@ export const PEER_IDENTITY = {
   hostVersion: '0.1.0',
 } as const;
 
-/** Read the host's in-page surface, if the host registered one. */
+/**
+ * Read the surface this peer relays.
+ *
+ * Two shapes, and the order between them is deliberate. A host that registered
+ * `window.__fuaran` holds its tree in the page, and that surface is the answer
+ * — always, including on a page that ALSO drives from the server, where the two
+ * are not in conflict and the tree surface is the richer one.
+ *
+ * Only where no such global exists does the second shape apply: a page carrying
+ * the server-driven shim holds no tree, and since `relay@1.4` there is
+ * something honest for a peer over it to say (DEVTOOLS_RELAY §6.5). Before that
+ * this returned `undefined` here and the peer answered `NOT_OPTED_IN` — which
+ * was true about the debug surface and misleading about the page, because it
+ * sent a developer to enable a flag that would not have helped.
+ */
 const readSurface = (win: Window): HostSurface | undefined => {
   const candidate = (win as unknown as Record<string, unknown>)[SURFACE_KEY];
-  return typeof candidate === 'object' && candidate !== null
-    ? (candidate as HostSurface)
-    : undefined;
+  if (typeof candidate === 'object' && candidate !== null) return candidate as HostSurface;
+  if (isServerDrivenPage(win, SURFACE_KEY)) return serverDrivenSurface(win.document, win);
+  return undefined;
 };
 
 /**

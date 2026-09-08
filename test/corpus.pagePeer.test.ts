@@ -27,6 +27,8 @@ import {
   encodeFailingHost,
   nodeJsonHost,
   taggedHost,
+  unreachableUpstreamHost,
+  upstreamHost,
 } from './support/fakeHost.js';
 
 const IDENTITY = { host: 'fuaran-devtools-page-relay', hostVersion: '0.1.0' };
@@ -80,6 +82,23 @@ const SERVED: Record<string, HostSurface | undefined> = {
   'read-node-json': nodeJsonHost,
   'read-node-json-subtree': nodeJsonHost,
   'refusal-encode-failed': encodeFailingHost,
+
+  // ── `relay@1.4` — the peer whose tree is not in the page (§6.5) ──
+  //
+  // These are the corpus's first `"peer": "upstream"` fixtures, and this
+  // extension serves them because it BUILDS such a peer: a page carrying the
+  // server-driven shim and no in-page introspection global gets the treeless
+  // surface (`inspect/serverDriven`), which is what `upstreamHost` stands in
+  // for here. A page-tree host has no peer of this shape and never will, which
+  // is why the manifest declares the shape at all.
+  'hello-treeless': upstreamHost,
+  'hello-treeless-1-3-client': upstreamHost,
+  'refusal-capability-absent-treeless': upstreamHost,
+  // The later-stage peer: it advertises the proxied reads and cannot reach the
+  // far side. Stubbed exactly as `refusal-encode-failed` is, and for the same
+  // reason — what the fixture pins is the peer's mapping of "the request would
+  // not leave" onto the class.
+  'refusal-upstream-unavailable': unreachableUpstreamHost,
 };
 
 /**
@@ -225,12 +244,111 @@ describe('relay corpus — page peer', () => {
     expect(current?.payload['capabilities']).toContain('read.nodeJson');
   });
 
+  // ── §6.5 — the peer that holds no tree ──
+  //
+  // The fixtures above assert the SHAPES. These assert the three rules that no
+  // shape comparison reaches: what a page-tree peer must NOT emit, that the
+  // declaration survives negotiating down, and that the refusal is restricted
+  // to the case the peer can actually assert.
+
+  it('emits no `treeSource` at all when the tree IS in the page (§6.5)', () => {
+    // Not `"page"` — ABSENT. §6.5 asks a page-tree peer to omit the field so
+    // its handshake stays byte-identical to one a pre-1.4 peer would have sent,
+    // which is what keeps the corpus's unchanged older handshakes evidence
+    // rather than fixtures that merely happen to still pass.
+    const peer = createPagePeer(nodeJsonHost, IDENTITY);
+    const handshake = peer.handle(readFixture('hello-node-json.request.json'));
+    expect(handshake?.payload).not.toHaveProperty('treeSource');
+  });
+
+  it('declares `treeSource` into an OLDER session too (§6.5 rule 4)', () => {
+    // Unlike a capability (§6.3), the declaration is not withheld at an earlier
+    // session profile: the older client drops it by §10.2 at no cost, and
+    // withholding it would leave a `relay@1.4` client that negotiated down
+    // unable to tell two genuinely different peers apart. The capability set is
+    // still filtered per minor, and this asserts both at once.
+    const peer = createPagePeer(upstreamHost, IDENTITY);
+    const older = peer.handle({
+      $relay: 'relay@1.0',
+      dir: 'request',
+      id: 'c-70',
+      type: 'hello',
+      payload: { client: 'x', clientVersion: '1', accepts: ['relay@1.0'] },
+    });
+    expect(older?.payload['profile']).toBe('relay@1.0');
+    expect(older?.payload['treeSource']).toBe('upstream');
+    expect(older?.payload['capabilities']).toEqual(['read.renderedDom']);
+  });
+
+  it('serves the one read that asks the DOM, on a page whose tree is upstream (§7.4)', () => {
+    // The reason the tier is not simply blocked: `read.renderedDom` asks the
+    // rendered element a geometry question and never asks the tree, so it is
+    // servable with no channel to the far side at all.
+    const peer = createPagePeer(upstreamHost, IDENTITY);
+    const geometry = peer.handle(readFixture('read-rendered-dom.request.json'));
+    expect(geometry?.type).toBe('read.renderedDom.ok');
+    expect(typeof geometry?.payload['width']).toBe('number');
+  });
+
+  it('raises UPSTREAM_UNAVAILABLE only for a read the TREE would answer (§9.3)', () => {
+    // The restriction, from the other side: the same unreachable peer answers
+    // `read.renderedDom` normally, because that request never needed the far
+    // side. A peer that refused it too would be reporting a channel fault as
+    // the cause of an outcome the channel has nothing to do with.
+    const peer = createPagePeer(unreachableUpstreamHost, IDENTITY);
+    const geometry = peer.handle(readFixture('read-rendered-dom.request.json'));
+    expect(geometry?.type).toBe('read.renderedDom.ok');
+
+    const refused = peer.handle(readFixture('refusal-upstream-unavailable.request.json'));
+    expect(refused?.payload['class']).toBe('UPSTREAM_UNAVAILABLE');
+    expect((refused?.payload['detail'] as Record<string, unknown>)['reason']).toBe('no-channel');
+  });
+
+  it('never raises UPSTREAM_UNAVAILABLE from a page-tree peer (§9.3)', () => {
+    // The class says "this peer declares its tree is upstream and could not
+    // dispatch". A peer whose tree is in the page has nothing to dispatch and
+    // no far side to be unable to reach, so the class is unreachable for it —
+    // asserted rather than assumed, because the guard is one boolean away from
+    // firing on every host that ever fails a read.
+    const peer = createPagePeer({ ...nodeJsonHost, upstreamReachable: () => false }, IDENTITY);
+    const answered = peer.handle(readFixture('read-node-json.request.json'));
+    expect(answered?.type).toBe('read.nodeJson.ok');
+  });
+
+  it('agrees with the corpus about which fixtures address which peer shape (§12.2)', () => {
+    // The SERVED table above is this runner's private knowledge; `peer` is the
+    // corpus's declaration. Checking them against each other is what stops the
+    // table drifting into a claim the corpus does not make — a fixture retagged
+    // upstream would otherwise keep passing here against a page-tree fake.
+    const upstreamFixtures = manifest.fixtures
+      .filter((fixture) => fixture.peer === 'upstream')
+      .map((fixture) => fixture.id);
+    expect(upstreamFixtures.length).toBeGreaterThan(0);
+    for (const id of upstreamFixtures)
+      expect(SERVED[id]?.treeSource, `${id} must be driven against an upstream-tree surface`).toBe(
+        'upstream',
+      );
+    for (const fixture of manifest.fixtures) {
+      if (fixture.peer !== undefined && fixture.peer !== 'page' && fixture.peer !== 'upstream')
+        throw new Error(`${fixture.id} declares an unrecognised peer shape '${fixture.peer}'`);
+      if (fixture.peer === 'upstream') continue;
+      expect(SERVED[fixture.id]?.treeSource, `${fixture.id} is a page-tree fixture`).not.toBe(
+        'upstream',
+      );
+    }
+  });
+
   it('advertises nothing about a read the surface does not serve', () => {
     // §6.4: a capability is a fact about the surface in front of the peer. A
     // 1.3 peer over a 1.0-era surface offers the 1.0 set and says so.
     const peer = createPagePeer(applyHost, IDENTITY);
     const handshake = peer.handle(readFixture('hello-node-json.request.json'));
-    expect(handshake?.payload['profile']).toBe(RELAY_PROFILE);
+    // `relay@1.3`, and NOT this peer's own id: the fixture's client accepts
+    // nothing newer, and §6.3 selects the highest profile BOTH sides can reach.
+    // The two coincided while this peer was at 1.3 and stopped coinciding when
+    // it advanced — which is the backward-compatibility promise being kept,
+    // asserted here rather than assumed.
+    expect(handshake?.payload['profile']).toBe('relay@1.3');
     expect(handshake?.payload['capabilities']).not.toContain('read.nodeJson');
   });
 

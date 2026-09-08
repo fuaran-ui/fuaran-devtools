@@ -24,7 +24,7 @@ import { describe, expect, it } from 'vitest';
 
 import { RelayClient, type RelayTransport } from '../src/relay/client.js';
 import { createPagePeer } from '../src/relay/pagePeer.js';
-import type { RelayEnvelope } from '../src/relay/protocol.js';
+import { RELAY_PROFILE, type RelayEnvelope } from '../src/relay/protocol.js';
 import { updateProp, updateStyle } from '../src/edit/ops.js';
 import { collectionLength, styleBlock, valueAtPath } from '../src/panel/nodeJson.js';
 import { liveHost, node, type LiveNode } from './support/liveHost.js';
@@ -86,7 +86,13 @@ describe('the read arrives, whole, and with what the tree holds', () => {
     const handshake = await client.hello();
     expect(handshake.ok).toBe(true);
     if (!handshake.ok) return;
-    expect(handshake.value.profile).toBe('relay@1.3');
+    // The SESSION profile, which is this build's own on both sides — the
+    // client accepts `relay@1.4` and the peer serves it. The entry point was
+    // introduced at 1.3 and is advertised at every session at or above it,
+    // which is what the second assertion says; the first says only that a
+    // 1.4 client and a 1.4 peer settle on 1.4 rather than on the minor that
+    // happened to introduce the read they are about to use.
+    expect(handshake.value.profile).toBe(RELAY_PROFILE);
     expect(handshake.value.capabilities).toContain('read.nodeJson');
   });
 

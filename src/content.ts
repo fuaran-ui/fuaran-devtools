@@ -11,7 +11,7 @@
 //      This route needs no `scripting` permission and no host permission,
 //      which is why it is preferred over `chrome.scripting.executeScript`:
 //      the extension asks for strictly less than the alternative.
-//   3. SPEAK THE RELAY. This script is the `relay@1.3` CLIENT peer. Relay
+//   3. SPEAK THE RELAY. This script is the `relay@1.4` CLIENT peer. Relay
 //      traffic never leaves the tab (DEVTOOLS_RELAY §1.2); what crosses to the
 //      panel is already-shaped result data on the extension-private bridge.
 //   4. OVERLAY + PICK. Both are pure DOM work, so they live here rather than
@@ -31,13 +31,13 @@ import {
   type BridgeResponse,
   type StatusResult,
 } from './bridge.js';
-import { hasFuaranMarkup, markedElementCount } from './inspect/detect.js';
+import { hasFuaranMarkup, markedElementCount, markedNodeIds } from './inspect/detect.js';
 import { createRelayInjector } from './inspect/inject.js';
 import { hideHighlight, showHighlight } from './inspect/overlay.js';
 import { startPicking } from './inspect/picker.js';
 import { RelayClient, windowTransport, type RelayFailure } from './relay/client.js';
 import { EXTENSION_PEER_HOST } from './relay/pagePeer.js';
-import { DEFAULT_ACTOR_CLASS } from './relay/protocol.js';
+import { DEFAULT_ACTOR_CLASS, treeSourceOf } from './relay/protocol.js';
 
 const CLIENT_NAME = 'fuaran-devtools';
 const CLIENT_VERSION = '0.1.0';
@@ -120,6 +120,14 @@ const status = async (): Promise<StatusResult> => {
       surfaceVersion: info.surfaceVersion,
       profile: info.profile,
       capabilities: info.capabilities,
+      // §6.5: resolved HERE, once, rather than passed through as the absence
+      // the wire carries. Absent means `page` and the panel must not have to
+      // know that; an unrecognised value is carried verbatim, because §10.3
+      // does not license reading a value this build does not know as the
+      // default — and reading it as `page` is the one direction that is
+      // actively unsafe, since it is what would make the panel treat a proxied
+      // read as a local one.
+      treeSource: treeSourceOf(info),
       treeRevision: info.treeRevision,
     };
   }
@@ -242,6 +250,11 @@ const handle = async (request: BridgeRequest): Promise<unknown> => {
       return unwrap(relayClient().readRenderedDom(requireString(request, 'nodeId')));
     case 'readNodeJson':
       return unwrap(relayClient().readNodeJson(requireString(request, 'nodeId')));
+    case 'listRendered':
+      // Read fresh, never cached: on a server-driven page the DOM is what the
+      // last pushed patch frame left behind, so a list held from an earlier
+      // call describes a page that has moved on.
+      return { nodeIds: markedNodeIds(document) };
     case 'apply': {
       // §8.2.1 rule 1: absence already says `human`, so the default class is
       // OMITTED rather than spelled out. That keeps a panel-authored envelope

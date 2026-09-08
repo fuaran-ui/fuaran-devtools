@@ -55,6 +55,10 @@ const ENUMERATED_KEYS = new Set([
   'cause',
   'event',
   'capabilities',
+  // §6.5's closed two-value set, since `relay@1.4`. It belongs here for the
+  // same reason `capabilities` does: it is protocol content the fixture gets to
+  // pin, not the responding peer's own identity.
+  'treeSource',
   'slot',
   'kind',
   'nodeId',

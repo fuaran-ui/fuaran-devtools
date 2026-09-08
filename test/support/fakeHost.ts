@@ -289,3 +289,47 @@ export const taggedHost: HostSurface = {
     return { error: `Slot '${slot}' is not a binding slot on node '${nodeId}'.` };
   },
 };
+
+// ─── The upstream-tree surfaces (§6.5, since `relay@1.4`) ───────────
+
+/**
+ * A surface whose tree is NOT in the page — the shape a server-driven page
+ * presents, and the one `hello-treeless` pins.
+ *
+ * What makes it the honest shape rather than a stripped-down one: of the seven
+ * reads, `read.renderedDom` (§7.4) is the only one that asks the DOM a question
+ * instead of asking the tree, so it is the only one this surface can serve
+ * without reaching the far side. Every other read and `apply` are ABSENT rather
+ * than present-and-refusing, because §6.4 makes a capability a fact about the
+ * surface: a peer over this advertises `read.renderedDom` and refuses the rest
+ * `CAPABILITY_ABSENT`, which is what `refusal-capability-absent-treeless`
+ * asserts.
+ *
+ * There is deliberately no `inspectTree` returning a patch-derived
+ * reconstruction. That is what §6.5 rule 2 forbids, and a fake that offered one
+ * would build into the test suite the exact thing the rule exists to prevent.
+ */
+export const upstreamHost: HostSurface = {
+  version: '0.1.0',
+  treeSource: 'upstream',
+  getRenderedDom: geometry,
+};
+
+/**
+ * A LATER-STAGE upstream-tree surface: one whose channel can carry a question,
+ * so it advertises the proxied reads — and which cannot reach the far side
+ * right now.
+ *
+ * This is the surface `refusal-upstream-unavailable` is answered from, and it
+ * is stubbed for the same reason `encodeFailingHost` is: no shipped host is in
+ * this position yet, and what the fixture pins is the peer's MAPPING of "the
+ * request would not leave" onto the class. `upstreamReachable` returning
+ * `false` is a fact the peer holds LOCALLY — no channel is established — which
+ * is precisely the restriction §9.3 puts on the class: it is raised only where
+ * the peer can assert the request was never dispatched.
+ */
+export const unreachableUpstreamHost: HostSurface = {
+  ...nodeJsonHost,
+  treeSource: 'upstream',
+  upstreamReachable: () => false,
+};

@@ -1,5 +1,5 @@
 // ============================================================================
-//  relay/pagePeer — the `relay@1.3` PAGE PEER, over a host's in-page surface.
+//  relay/pagePeer — the `relay@1.4` PAGE PEER, over a host's in-page surface.
 //
 //  This is the half of the relay that runs in the inspected page's own JS
 //  world (`src/page-relay.ts` installs it). It answers relay requests by
@@ -32,6 +32,7 @@
 import {
   capabilitiesAt,
   capabilityFor,
+  DEFAULT_TREE_SOURCE,
   event as relayEvent,
   isRelayEnvelope,
   isRequestType,
@@ -84,6 +85,29 @@ export interface HostSurface {
   subscribe?(listener: (change: unknown) => void): unknown;
   /** The host's own revision token, preferred over a digest when present. */
   treeRevision?(): unknown;
+  /**
+   * Where this surface's tree lives (§6.5, since `relay@1.4`) — `'page'` or
+   * `'upstream'`. Absent means `'page'`, so every surface written before 1.4
+   * declares the truth about itself by saying nothing.
+   *
+   * A FACT ABOUT THE SURFACE, exactly as `canApply` is: the peer reports what
+   * the surface says and never infers it. Inferring would mean guessing from
+   * which methods happen to be present, and a surface that is merely narrow
+   * (§6.4's read-only host) is not a surface whose tree is somewhere else.
+   */
+  readonly treeSource?: string;
+  /**
+   * Can this peer reach the side that holds the tree, RIGHT NOW (§9.3)?
+   *
+   * Consulted only when `treeSource` is `'upstream'`. `false` is the one state
+   * the class covers — the peer knows the request would not leave — and it is
+   * why this is a predicate rather than a promise: the answer must be knowable
+   * without asking anything of the far side, since the whole point is that the
+   * far side may not be there. A surface that does not implement it is treated
+   * as reachable, which keeps the refusal a positive assertion rather than a
+   * default.
+   */
+  upstreamReachable?(): boolean;
 }
 
 /** How this peer emits unsolicited `changed` events (§8.5). */
@@ -437,6 +461,67 @@ const treeRevision = (surface: HostSurface): string => {
   }
 };
 
+// ─── Tree source (§6.5) ─────────────────────────────────────────────
+
+/**
+ * What this surface says about where its tree is, in the form `hello.ok`
+ * carries it: `undefined` when the tree is in the page.
+ *
+ * §6.5 asks a page-tree peer to OMIT the field rather than spell out `"page"`,
+ * so its handshake stays byte-identical to one an earlier peer would have sent
+ * — the same reasoning that keeps `actorClass` off an ordinary `apply` (§8.2.1
+ * rule 1). An unrecognised declared value is passed through rather than
+ * corrected: this peer relays a fact the surface asserts, and §10.3 leaves the
+ * reading of an unknown enumerated value to the client.
+ */
+export const treeSourceOfSurface = (surface: HostSurface): string | undefined => {
+  const declared = surface.treeSource;
+  if (typeof declared !== 'string' || declared === DEFAULT_TREE_SOURCE) return undefined;
+  return declared;
+};
+
+/**
+ * The request types whose answer comes from the TREE rather than from the DOM.
+ *
+ * `read.renderedDom` (§7.4) is the one read outside this set, and that is the
+ * whole reason an upstream-tree peer has anything to serve before its channel
+ * grows a correlated response leg: it asks the rendered element a geometry
+ * question, which the page can always answer for itself.
+ *
+ * `subscribe` / `unsubscribe` are in the set because a change subscription is a
+ * subscription to the tree; a peer that cannot reach the tree cannot promise
+ * to report its changes.
+ */
+const TREE_BACKED_TYPES: ReadonlySet<RequestType> = new Set<RequestType>([
+  'read.nodeState',
+  'read.bindingValue',
+  'read.tree',
+  'read.findNodes',
+  'read.affordances',
+  'read.nodeJson',
+  'apply',
+  'subscribe',
+  'unsubscribe',
+]);
+
+/**
+ * Whether this request must be refused `UPSTREAM_UNAVAILABLE` (§9.3) before it
+ * is served — true only when the peer declares `'upstream'`, the surface says
+ * the far side is not reachable, and the answer would have had to come from
+ * there.
+ *
+ * The order matters and is the class's restriction made mechanical: this is
+ * evaluated BEFORE anything is dispatched, so a `true` here is the peer
+ * asserting the request never left, which is the only case §9.3 admits. There
+ * is deliberately no path that turns a dispatched-and-unanswered request into
+ * this refusal — that case gets no response at all, because a refusal promises
+ * the tree is unchanged and a peer in that position cannot promise it.
+ */
+export const upstreamUnreachableFor = (surface: HostSurface, type: RequestType): boolean =>
+  surface.treeSource === 'upstream' &&
+  TREE_BACKED_TYPES.has(type) &&
+  surface.upstreamReachable?.() === false;
+
 // ─── Capability advertisement (§6.3, §6.4) ──────────────────────────
 
 /**
@@ -554,11 +639,19 @@ export const createPagePeer = (
             received: accepts.join(', '),
             supported: [RELAY_PROFILE],
           });
+        // §6.5 rule 4: emitted whatever profile the session settled on, unlike
+        // a capability. A `relay@1.3` client drops it by §10.2 at no cost, and
+        // withholding it would leave a `relay@1.4` client that negotiated down
+        // unable to tell two genuinely different peers apart. Omitted entirely
+        // for a page-tree peer, so that handshake stays byte-identical to one
+        // an earlier peer would have sent.
+        const declaredTreeSource = treeSourceOfSurface(live);
         return ok(id, type, {
           host: identity.host,
           hostVersion: identity.hostVersion,
           surfaceVersion: live.version ?? 'unknown',
           profile: session,
+          ...(declaredTreeSource === undefined ? {} : { treeSource: declaredTreeSource }),
           // §6.3's second obligation, and the one the profile bump made real:
           // capabilities are reported AT THE SESSION PROFILE, so a capability
           // whose request type arrived after it is absent from this answer. A
@@ -881,6 +974,21 @@ export const createPagePeer = (
         return refusal(id, type, 'CAPABILITY_ABSENT', `This peer does not offer '${capability}'.`, {
           capability,
         });
+
+      // §9.3, since `relay@1.4`. AFTER the capability check and BEFORE the
+      // surface is called, which is what makes the refusal honest: at this
+      // point the peer knows the request would need the far side and knows the
+      // far side is not reachable, so it can assert the request never left.
+      // A capability this peer never advertised is still CAPABILITY_ABSENT
+      // above — an unreachable upstream does not retract an advertisement.
+      if (upstreamUnreachableFor(surface, type))
+        return refusal(
+          id,
+          type,
+          'UPSTREAM_UNAVAILABLE',
+          'The request was not dispatched: no channel to the side holding the tree.',
+          { reason: 'no-channel' },
+        );
 
       try {
         return serve(message, type, surface);

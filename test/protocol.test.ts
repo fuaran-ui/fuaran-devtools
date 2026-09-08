@@ -27,7 +27,10 @@ describe('profile grammar and negotiation (§5)', () => {
 
   it.each([
     ['relay@1.0', 'Current'],
-    ['relay@1.4', 'Behind'],
+    // A minor ABOVE this peer's own — the row moves up with the peer, and its
+    // job is unchanged: proving that a newer client is proceeded with rather
+    // than refused, which is the whole content of `Behind`.
+    ['relay@1.5', 'Behind'],
     // A different MAJOR is Foreign in both directions — a lower one is not
     // "older and therefore safe", it may lack a shape this peer relies on.
     ['relay@0.9', 'Foreign'],

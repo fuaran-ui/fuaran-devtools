@@ -1,7 +1,7 @@
 // ============================================================================
 //  bridge — the extension-private panel ↔ content-script protocol.
 //
-//  DELIBERATELY NOT THE RELAY. The relay contract (`relay@1.3`) governs the
+//  DELIBERATELY NOT THE RELAY. The relay contract (`relay@1.4`) governs the
 //  page ↔ extension boundary and has a closed message set; carrying the
 //  panel's own concerns — highlight, pick, detection status — over it would
 //  make every one of them an `UNKNOWN_MESSAGE`, and would quietly turn a
@@ -30,6 +30,22 @@ export type BridgeMethod =
   /** The focused node's own canonical wire JSON (§7.7) — the read the property
    *  editor derives its current values and its indexed paths from. */
   | 'readNodeJson'
+  /**
+   * The node ids the RENDERER MARKED in the DOM, in document order.
+   *
+   * Not a relay read and deliberately not one: it asks the document, not the
+   * tree, so it is the one enumeration available on a page whose tree lives
+   * upstream (DEVTOOLS_RELAY §6.5) and whose `read.tree` is therefore absent.
+   * §6.1 permits exactly this use of the marker — "a heuristic hint about where
+   * to look" — and forbids the other one, relying on it for DETECTION, which
+   * nothing here does.
+   *
+   * It is NOT a substitute for `read.tree` and must never be presented as one:
+   * it carries no kinds, no bindings and no structure, only which elements the
+   * renderer stamped. That is enough to select one and ask `read.renderedDom`
+   * about it, and it is nothing else.
+   */
+  | 'listRendered'
   /** Propose one tree-op through the page's own gated apply path. */
   | 'apply'
   /** Establish (idempotently) the tab's change subscription. */
@@ -207,6 +223,16 @@ export interface StatusResult {
   readonly surfaceVersion?: string;
   readonly profile?: string;
   readonly capabilities?: readonly string[];
+  /**
+   * Where the peer says its tree lives (DEVTOOLS_RELAY §6.5, since
+   * `relay@1.4`) — `'page'`, `'upstream'`, or a value this build does not know.
+   *
+   * Always populated for a connected peer, never left absent: absence on the
+   * WIRE means `page`, and the content script resolves that once so the panel
+   * has one reading rather than each caller repeating the default. A value
+   * outside the closed set is carried verbatim (§10.3).
+   */
+  readonly treeSource?: string;
   readonly treeRevision?: string;
   /** Human-readable detail for the `no-surface` / `no-peer` states. */
   readonly message?: string;

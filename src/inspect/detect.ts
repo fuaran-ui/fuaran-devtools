@@ -29,6 +29,28 @@ export const markedElementCount = (doc: Pick<Document, 'querySelectorAll'>): num
   doc.querySelectorAll(SELECTOR).length;
 
 /**
+ * The node ids the renderer marked, in document order, each appearing once.
+ *
+ * `querySelectorAll` is already document-ordered, so the order is the page's
+ * own rather than an ordering invented here. Duplicates are collapsed because a
+ * node id identifies a node, and a renderer that stamped two elements with one
+ * id has produced one node the panel should offer once — an inspector's list is
+ * not the place to surface that, and offering the same id twice would make
+ * selection ambiguous for no gain.
+ *
+ * This is the §6.1-permitted use of the marker — a hint about where to look —
+ * and it is the only enumeration available on a page whose tree is upstream.
+ */
+export const markedNodeIds = (doc: Pick<Document, 'querySelectorAll'>): readonly string[] => {
+  const seen = new Set<string>();
+  for (const element of Array.from(doc.querySelectorAll(SELECTOR))) {
+    const id = element.getAttribute(NODE_ID_ATTRIBUTE);
+    if (id !== null && id !== '') seen.add(id);
+  }
+  return [...seen];
+};
+
+/**
  * The node id owning `element` — the nearest marked ancestor-or-self. A click
  * usually lands on an inner, unmarked element (a `<span>` inside a marked
  * `<div>`), so the walk up is what makes click-to-select land on a real node

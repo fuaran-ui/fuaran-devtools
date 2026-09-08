@@ -78,7 +78,7 @@ that is not there.
 
 ## How it works
 
-The extension speaks the **`relay@1.3`** page↔extension contract, specified in
+The extension speaks the **`relay@1.4`** page↔extension contract, specified in
 [`DEVTOOLS_RELAY.md`](https://github.com/fuaran-ui/fuaran-ui-specification) alongside the Fuaran UI
 wire format. Four pieces:
 
@@ -98,6 +98,32 @@ isolated world, so the privileged surface stays as small as it can be.
 
 Relay traffic never leaves the tab. What crosses to the panel is already-shaped result data on a
 separate, extension-private envelope; the relay contract governs the page boundary and nothing else.
+
+### A page whose tree is not in it
+
+Some pages are driven from the server: the session tree lives there, and the browser half is a
+renderer applying pushed patches. Such a page has no in-page tree at all, so the reads this panel is
+built on have nothing local to answer from.
+
+Until `relay@1.4` there was nothing honest for a peer over such a page to say, and the panel reported
+it as a page with no debug surface — true about the surface, misleading about the page, and it sent
+you to enable a flag that would not have helped. The contract now lets a peer declare where its tree
+lives, and the extension does two things with that:
+
+- **It builds a peer for those pages** rather than none. It advertises `read.renderedDom` — the one
+  read that asks the rendered element a geometry question instead of asking the tree — and declares
+  `treeSource: "upstream"`. That is not an abbreviation of the ordinary capability set; it is the
+  honest one, because answering a tree read would mean rebuilding a tree from the patches the page
+  has applied, and the contract forbids that for a good reason: the result would carry the
+  renderer's idea of the tree rather than the host's, and nothing on the wire could tell you which
+  you got.
+- **It names what is missing, and why.** The panel lists the marked elements the page carries (from
+  the DOM, and labelled as such — it is not a tree view), lets you read any one's live geometry, and
+  states each absent capability with the refusal class you would actually receive. "Not offered by
+  this peer" and "no such entry point" are different facts, and only one of them will change.
+
+The set grows on its own when that channel can carry a question and match an answer to it; nothing
+here has to be redesigned for that, which is what advertising honestly buys.
 
 ### Who changed this — human edits and dispatched edits
 
@@ -237,7 +263,7 @@ in words which half is missing and why, naming the cause the page gave:
   "ops": [ … ],
   "tree": null,
   "integrity": { "base": "absent", "tree": "absent", "chainSeed": "genesis", "reason": "…" },
-  "session": { "host": "…", "profile": "relay@1.3", "startedAt": "…", "startRevision": "…", … },
+  "session": { "host": "…", "profile": "relay@1.4", "startedAt": "…", "startRevision": "…", … },
   "structure": { "shape": "…", "base": { … }, "final": { … } }
 }
 ```

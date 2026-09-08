@@ -1,8 +1,8 @@
 // ============================================================================
-//  relay/protocol — the `relay@1.3` envelope, its closed sets, and its guards.
+//  relay/protocol — the `relay@1.4` envelope, its closed sets, and its guards.
 //
 //  This module is a direct, dependency-free transcription of the normative
-//  DevTools relay contract (`DEVTOOLS_RELAY.md`, profile `relay@1.3`). It is
+//  DevTools relay contract (`DEVTOOLS_RELAY.md`, profile `relay@1.4`). It is
 //  deliberately written FROM THE SPEC and imports nothing from any host — the
 //  contract's own §1.2 posture is that "a relay implementation is written from
 //  this document; it does not need to read any host's source".
@@ -16,13 +16,14 @@
  * The relay profile this implementation speaks (DEVTOOLS_RELAY §5.1) — "the
  * HIGHEST profile it can serve", not the only one.
  *
- * This is `relay@1.3` because this build uses `read.nodeJson` (§7.7), and a peer
- * that uses a minor's vocabulary while declaring an earlier minor is
- * misdescribing itself. §5.1's superset rule is what makes the claim honest in
- * the other direction: a 1.3 peer serves any minor at or below its own, which
- * `selectSessionProfile` below turns into a per-session decision.
+ * This is `relay@1.4` because this build declares `treeSource` (§6.5) and can
+ * raise `UPSTREAM_UNAVAILABLE` (§9.3), and a peer that uses a minor's
+ * vocabulary while declaring an earlier minor is misdescribing itself. §5.1's
+ * superset rule is what makes the claim honest in the other direction: a 1.4
+ * peer serves any minor at or below its own, which `selectSessionProfile` below
+ * turns into a per-session decision.
  */
-export const RELAY_PROFILE = 'relay@1.3';
+export const RELAY_PROFILE = 'relay@1.4';
 
 /**
  * The profiles this build speaks, most-preferred first — the `accepts` array of
@@ -33,7 +34,13 @@ export const RELAY_PROFILE = 'relay@1.3';
  * exactly the population §5.3's backward-compatible minor bump exists to keep
  * serving.
  */
-export const ACCEPTED_PROFILES = ['relay@1.3', 'relay@1.2', 'relay@1.1', 'relay@1.0'] as const;
+export const ACCEPTED_PROFILES = [
+  'relay@1.4',
+  'relay@1.3',
+  'relay@1.2',
+  'relay@1.1',
+  'relay@1.0',
+] as const;
 
 /** The envelope field whose presence marks a message as relay traffic (§3.2, §4). */
 export const RELAY_FIELD = '$relay';
@@ -151,11 +158,32 @@ export const REFUSAL_CLASSES = [
   // would be a lie about a node that is plainly present and would send a client
   // to look somewhere else — the one remedy that cannot help.
   'ENCODE_FAILED',
+  // §9.3, since `relay@1.4`: this peer declares `treeSource: "upstream"` (§6.5)
+  // and COULD NOT DISPATCH the request to the side that holds the tree. The
+  // restriction is the class — it is raised only where the peer can assert the
+  // request never left, because §8.3's "a refused op MUST leave the tree
+  // unchanged" is a promise a peer that dispatched and then heard nothing is
+  // not in a position to make. That case gets no response at all and the
+  // client's own timeout governs.
+  'UPSTREAM_UNAVAILABLE',
   'VALIDATOR_REJECT',
   'POLICY_DENIED',
 ] as const;
 
 export type RefusalClass = (typeof REFUSAL_CLASSES)[number];
+
+/**
+ * The closed `detail.reason` set on an `UPSTREAM_UNAVAILABLE` refusal (§9.3).
+ *
+ * Both values say the request was never dispatched, which is the whole content
+ * of the class: `no-channel` means none was established, `timeout-before-
+ * dispatch` that the send itself did not complete. A client renders "reconnect"
+ * and "retry" differently, which is why the field exists at all; §10.3 governs
+ * a value this build does not know.
+ */
+export const UPSTREAM_UNAVAILABLE_REASONS = ['no-channel', 'timeout-before-dispatch'] as const;
+
+export type UpstreamUnavailableReason = (typeof UPSTREAM_UNAVAILABLE_REASONS)[number];
 
 /** The closed `read.bindingValue` status set (§7.3). */
 export const BINDING_STATUSES = [
@@ -186,6 +214,48 @@ export interface HelloPayload {
   readonly accepts: readonly string[];
 }
 
+/**
+ * Where the tree a session reads lives (§6.5, since `relay@1.4`).
+ *
+ * Deliberately `"upstream"` and not `"server"`: the contract does not know what
+ * is on the far side of the channel, how far away it is, or what protocol
+ * carries the question, and a name that implied otherwise would be a claim this
+ * peer cannot make.
+ */
+export const TREE_SOURCES = ['page', 'upstream'] as const;
+
+export type TreeSource = (typeof TREE_SOURCES)[number];
+
+/**
+ * §6.5: absent means `"page"` — what every peer before `relay@1.4` meant.
+ *
+ * The same default-for-the-existing-population reasoning as §8.2.1's
+ * `actorClass`: the default is chosen so that every handshake already on the
+ * wire stays correct rather than becoming retroactively unlabelled.
+ */
+export const DEFAULT_TREE_SOURCE: TreeSource = 'page';
+
+export const isTreeSource = (value: unknown): value is TreeSource =>
+  typeof value === 'string' && (TREE_SOURCES as readonly string[]).includes(value);
+
+/**
+ * The tree source a handshake states, as a CLIENT must read it (§6.5, §10.3).
+ *
+ * An absent field is `"page"` by the rule above. An UNRECOGNISED one is carried
+ * back verbatim rather than normalised, for the reason §10.3 gives: a value
+ * this build does not know is not a licence to guess, and relabelling it
+ * `"page"` would assert that the tree is in the page on no evidence at all —
+ * the one reading that is actively unsafe, since it is what makes a client
+ * treat a proxied read as a local one.
+ */
+export const treeSourceOf = (payload: {
+  readonly treeSource?: unknown;
+}): TreeSource | string => {
+  const declared = payload.treeSource;
+  if (declared === undefined || typeof declared !== 'string') return DEFAULT_TREE_SOURCE;
+  return declared;
+};
+
 /** `hello.ok` response payload (§6.3). */
 export interface HelloOkPayload {
   readonly host: string;
@@ -193,6 +263,14 @@ export interface HelloOkPayload {
   readonly surfaceVersion: string;
   readonly profile: string;
   readonly capabilities: readonly string[];
+  /**
+   * §6.5, since `relay@1.4`. Optional on the wire, and a peer whose tree IS in
+   * the page SHOULD omit it — so this is `undefined` against every peer that
+   * predates 1.4 and against most that do not. Read it through
+   * {@link treeSourceOf}, never directly, so the absent case is the documented
+   * default rather than each caller's guess.
+   */
+  readonly treeSource?: string;
   readonly treeRevision: string;
 }
 
