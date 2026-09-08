@@ -248,9 +248,7 @@ export const isTreeSource = (value: unknown): value is TreeSource =>
  * the one reading that is actively unsafe, since it is what makes a client
  * treat a proxied read as a local one.
  */
-export const treeSourceOf = (payload: {
-  readonly treeSource?: unknown;
-}): TreeSource | string => {
+export const treeSourceOf = (payload: { readonly treeSource?: unknown }): TreeSource | string => {
   const declared = payload.treeSource;
   if (declared === undefined || typeof declared !== 'string') return DEFAULT_TREE_SOURCE;
   return declared;

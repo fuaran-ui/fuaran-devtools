@@ -558,9 +558,15 @@ const round = (value: number): string => (Math.round(value * 10) / 10).toString(
 const UPSTREAM_PENDING: readonly { readonly capability: string; readonly why: string }[] = [
   { capability: 'read.tree', why: 'the structural snapshot is held by the upstream host' },
   { capability: 'read.nodeState', why: "a node's kind, bindings and children come from the tree" },
-  { capability: 'read.bindingValue', why: 'slot resolution runs where the tree and its sources are' },
+  {
+    capability: 'read.bindingValue',
+    why: 'slot resolution runs where the tree and its sources are',
+  },
   { capability: 'read.findNodes', why: 'a kind search is a question about the tree' },
-  { capability: 'read.nodeJson', why: "only the upstream host's own encoder may produce this (§7.7)" },
+  {
+    capability: 'read.nodeJson',
+    why: "only the upstream host's own encoder may produce this (§7.7)",
+  },
   { capability: 'apply', why: 'the edit is decoded, validated and policy-checked upstream (§8.1)' },
   { capability: 'subscribe', why: 'a change subscription is a subscription to the tree' },
 ];
@@ -650,8 +656,7 @@ const showUpstreamPage = async (): Promise<void> => {
     item.appendChild(el('span', 'id', nodeId));
     item.addEventListener('click', () => {
       selected = nodeId;
-      for (const row of Array.from(list.children))
-        row.classList.toggle('selected', row === item);
+      for (const row of Array.from(list.children)) row.classList.toggle('selected', row === item);
       void upstreamDetail(nodeId);
     });
     item.addEventListener('mouseenter', () => {

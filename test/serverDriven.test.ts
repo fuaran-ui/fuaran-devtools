@@ -37,9 +37,12 @@ describe('server-driven pages (§6.5)', () => {
     // host that drives from the server AND publishes its tree locally, and its
     // tree surface is the richer, truer answer. Declaring `upstream` there
     // would be a false statement about where the tree is.
-    expect(isServerDrivenPage({ FuaranLive: {}, [SURFACE_KEY]: { inspectTree: () => ({}) } }, SURFACE_KEY)).toBe(
-      false,
-    );
+    expect(
+      isServerDrivenPage(
+        { FuaranLive: {}, [SURFACE_KEY]: { inspectTree: () => ({}) } },
+        SURFACE_KEY,
+      ),
+    ).toBe(false);
   });
 
   it('is not one on a page with neither', () => {
@@ -85,16 +88,38 @@ describe('server-driven pages (§6.5)', () => {
     expect(typeof geometry?.payload['hidden']).toBe('boolean');
   });
 
-  it('reads reachability from the shim’s OWN disconnected marker (§9.3)', () => {
-    // This is what makes `UPSTREAM_UNAVAILABLE` raisable with no correlated
-    // response leg at all: "no channel is established" is a fact held locally.
-    // The shim already publishes it on <html> to style a reconnecting banner,
-    // so reading it is the same page-local fact rather than a second protocol.
+  it('prefers the shim’s declared connection state over the styling hook (§9.3)', () => {
+    // A shim that publishes `isConnected()` is asked, and the QW2 attribute is
+    // ignored — the attribute's declared job is to style a reconnecting banner,
+    // and a presentation hook is a poor thing to make load-bearing for a
+    // protocol decision. Asserted with the two DISAGREEING, because that is the
+    // only arrangement in which "prefers" means anything.
+    const doc = page('<div data-fuaran-node-id="row-1">x</div>');
+    doc.documentElement.setAttribute(DISCONNECTED_ATTRIBUTE, '');
+    const surface = serverDrivenSurface(doc, { FuaranLive: { isConnected: () => true } });
+    expect(surface.upstreamReachable?.()).toBe(true);
+  });
+
+  it('falls back to the disconnected marker on a shim that declares neither (§9.3)', () => {
+    // What makes `UPSTREAM_UNAVAILABLE` raisable with no correlated response
+    // leg at all: "no channel is established" is a fact held locally. An older
+    // shim publishes it only on <html>, and reading a stale styling hook is
+    // still better than assuming a channel is up.
     const doc = page('<div data-fuaran-node-id="row-1">x</div>');
     const surface = serverDrivenSurface(doc, { FuaranLive: {} });
     expect(surface.upstreamReachable?.()).toBe(true);
     doc.documentElement.setAttribute(DISCONNECTED_ATTRIBUTE, '');
     expect(surface.upstreamReachable?.()).toBe(false);
+  });
+
+  it('takes the shim’s own `treeSource` declaration when it makes one (§6.5)', () => {
+    const doc = page('');
+    expect(serverDrivenSurface(doc, { FuaranLive: { treeSource: 'upstream' } }).treeSource).toBe(
+      'upstream',
+    );
+    // And an older shim that declares nothing is not misreported: reaching this
+    // function already established the shape, so the fallback is not a guess.
+    expect(serverDrivenSurface(doc, { FuaranLive: {} }).treeSource).toBe('upstream');
   });
 
   it('still answers geometry while the stream is down', () => {

@@ -39,9 +39,15 @@ const SHIM_KEY = 'FuaranLive';
  *
  * This is the whole reason an upstream-tree peer can raise
  * `UPSTREAM_UNAVAILABLE` at all without a response leg (§9.3): "no channel is
- * established" is a fact held LOCALLY, needing no answer from anywhere. The
- * shim already publishes it, to style a reconnecting banner; reading it is not
- * a second protocol, it is the same page-local fact.
+ * established" is a fact held LOCALLY, needing no answer from anywhere.
+ *
+ * It is the FALLBACK, not the primary source. A shim that publishes
+ * `isConnected()` is asked instead, because this attribute's declared job is to
+ * style a reconnecting banner and a presentation hook is a poor thing to make
+ * load-bearing for a protocol decision — someone with every reason to think it
+ * was presentation could rename it. The fallback stays because a page may be
+ * running a shim older than that member, and reading a stale styling hook is
+ * still better than assuming a channel is up.
  */
 export const DISCONNECTED_ATTRIBUTE = 'data-fuaran-disconnected';
 
@@ -92,19 +98,27 @@ const geometryOf = (doc: Document, nodeId: string): unknown => {
  * the truth here.
  */
 export const serverDrivenSurface = (doc: Document, win?: unknown): HostSurface => {
-  const shim =
+  const shim: Record<string, unknown> | undefined =
     win !== null && typeof win === 'object'
-      ? (win as Record<string, unknown>)[SHIM_KEY]
+      ? (((win as Record<string, unknown>)[SHIM_KEY] ?? undefined) as
+          Record<string, unknown> | undefined)
       : undefined;
-  const version =
-    typeof shim === 'object' && shim !== null && typeof (shim as Record<string, unknown>)['version'] === 'string'
-      ? ((shim as Record<string, unknown>)['version'] as string)
-      : undefined;
+  const version = typeof shim?.['version'] === 'string' ? (shim['version'] as string) : undefined;
 
   return {
     ...(version === undefined ? {} : { version }),
-    treeSource: 'upstream',
+    // The shim's own declaration wins, exactly as `canApply` does on a page-tree
+    // surface: this is a fact about the page, and the peer reports what the page
+    // says rather than what it inferred. `'upstream'` is the fallback because it
+    // is what reaching this function already established — nothing else builds
+    // this surface — so an older shim that declares nothing is not misreported.
+    treeSource:
+      typeof shim?.['treeSource'] === 'string' ? (shim['treeSource'] as string) : 'upstream',
     getRenderedDom: (nodeId: string) => geometryOf(doc, nodeId),
-    upstreamReachable: () => !doc.documentElement.hasAttribute(DISCONNECTED_ATTRIBUTE),
+    upstreamReachable: () => {
+      const declared = shim?.['isConnected'];
+      if (typeof declared === 'function') return (declared as () => unknown)() === true;
+      return !doc.documentElement.hasAttribute(DISCONNECTED_ATTRIBUTE);
+    },
   };
 };
