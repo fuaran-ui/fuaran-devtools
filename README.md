@@ -19,8 +19,10 @@ disposes. A page that offers no mutation capability is inspected exactly as befo
 affordances absent rather than disabled.
 
 Where the page serves it, the property editor is **read-modify-write**: each field shows what the
-node currently holds, and committing sends an op only for what you actually changed. A page that does
-not serve that read gets the set-only editor instead, which says so.
+node currently holds, a field you have changed is marked as differing from the page, and committing
+sends an op only for what you actually changed. A page that does not serve that read gets the
+set-only editor instead, which says so — and no field is marked, because there is nothing to mark
+it against.
 
 Nothing here is per-kind code. The fields offered for a node and the candidates offered by the
 palette are **derived from the canonical wire schema**, so a kind added to the vocabulary shows up
@@ -191,6 +193,7 @@ recording can answer for every field — including one nobody in the session eve
 | Edit            | Undoable                                                                                                                                                                |
 | --------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | a property edit | yes — against an earlier edit to the same field, the value a node was inserted with, or the captured base tree. Indexed and nested paths (`Columns[0].Label`) included. |
+| a style edit    | yes — the whole block the node carried goes back, so the tokens you never touched are restored too. A node that carried no block is restored to none.                   |
 | an insert       | yes — the panel minted the child, so it knows what to remove                                                                                                            |
 | a removal       | yes — the captured subtree goes back, with its children and property values, in the position the snapshot recorded                                                      |
 | a move          | yes — the recorded snapshot names the old parent and the old sibling order                                                                                              |

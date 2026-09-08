@@ -29,10 +29,14 @@ import {
   removeNode,
   reorderChildren,
   updateProp,
+  updateStyle,
+  type TreeOpJson,
 } from '../src/edit/ops.js';
 import {
   inverseOf,
+  priorStyle,
   priorValue,
+  NO_SOURCES,
   type InverseRefusalClass,
   type InverseSources,
 } from '../src/trail/inverse.js';
@@ -276,6 +280,225 @@ describe('UpdateProp refuses when nothing can answer, and says which nothing', (
       'NO_PRIOR_VALUE',
     );
     expect(message).toContain('inserted by this session');
+  });
+});
+
+// ─── UpdateStyle ────────────────────────────────────────────────────
+
+/**
+ * A wire tree carrying STYLE BLOCKS — the `wireTree` above has none.
+ *
+ * Separate rather than folded in, for the reason that fixture's own comment
+ * gives about the structural snapshot: serving both from one document would
+ * build in an equivalence the derivation must not assume. It also keeps one
+ * node (`b`) deliberately unstyled, which is the case the empty-block arm
+ * below exists for.
+ */
+const styledWireTree = (): WireNode => ({
+  id: 'root',
+  kind: {
+    $type: 'Box',
+    children: [
+      {
+        id: 'a',
+        kind: { $type: 'Heading', level: 1, text: 'alpha' },
+        style: { emphasis: 'Loud', tone: 'Success', weight: 'Spacious' },
+      },
+      { id: 'b', kind: { $type: 'Heading', level: 2, text: 'beta' } },
+      {
+        id: 'card',
+        kind: {
+          $type: 'Box',
+          children: [
+            {
+              id: 'inner',
+              kind: { $type: 'Heading', level: 3, text: 'gamma' },
+              style: { tone: 'Warning' },
+            },
+          ],
+        },
+      },
+    ],
+  },
+});
+
+const styledBase = async (): Promise<InverseSources> => withBase(styledWireTree());
+
+describe('UpdateStyle inverts against the block the node carried', () => {
+  it('restores what an earlier style edit in this session replaced', async () => {
+    const earlier = [updateStyle('a', { tone: 'Success' })];
+    const op = updateStyle('a', { tone: 'Danger' });
+    expect(expectOk(inverseOf(op, tree(), earlier, await styledBase()))).toEqual({
+      $type: 'UpdateStyle',
+      style: { tone: 'Success' },
+      target: 'a',
+    });
+  });
+
+  it('walks back to the most recent earlier style edit, not the first', async () => {
+    const earlier = [
+      updateStyle('a', { tone: 'Success' }),
+      updateStyle('a', { tone: 'Warning', emphasis: 'Loud' }),
+      updateStyle('inner', { tone: 'Danger' }),
+    ];
+    const undo = inverseOf(
+      updateStyle('a', { tone: 'Danger' }),
+      tree(),
+      earlier,
+      await styledBase(),
+    );
+    expect(expectOk(undo)['style']).toEqual({ tone: 'Warning', emphasis: 'Loud' });
+  });
+
+  it('restores the WHOLE block from the captured base when this session styled nothing', async () => {
+    // The case the phase is about. The panel merges one token over the block it
+    // read, so the op carries every token — and the undo has to put every token
+    // back, not only the one that visibly changed.
+    const op = updateStyle('a', { emphasis: 'Loud', tone: 'Danger', weight: 'Spacious' });
+    expect(expectOk(inverseOf(op, tree(), [], await styledBase()))).toEqual({
+      $type: 'UpdateStyle',
+      style: { emphasis: 'Loud', tone: 'Success', weight: 'Spacious' },
+      target: 'a',
+    });
+  });
+
+  it('reaches a node nested well below the root', async () => {
+    const undo = inverseOf(
+      updateStyle('inner', { tone: 'Success' }),
+      tree(),
+      [],
+      await styledBase(),
+    );
+    expect(expectOk(undo)['style']).toEqual({ tone: 'Warning' });
+  });
+
+  it('restores the block a node was INSERTED with, base tree or not', async () => {
+    const earlier = [
+      insertChild('root', {
+        id: 'heading-1',
+        kind: { $type: 'Heading', level: 1, text: 'Text' },
+        style: { tone: 'Success' },
+      }),
+    ];
+    const undo = inverseOf(
+      updateStyle('heading-1', { tone: 'Danger' }),
+      tree(),
+      earlier,
+      await styledBase(),
+    );
+    expect(expectOk(undo)['style']).toEqual({ tone: 'Success' });
+  });
+
+  it('restores an EMPTY block for a node that carried none, rather than refusing', async () => {
+    // Where `UpdateProp` refuses — it cannot express "make this optional absent
+    // again" — `UpdateStyle` can: the empty block is a value the op carries, and
+    // it is the same spelling the style editor emits when a user clears the last
+    // token. Vocabulary this build already uses, not a value invented at undo.
+    expect(
+      expectOk(inverseOf(updateStyle('b', { tone: 'Danger' }), tree(), [], await styledBase())),
+    ).toEqual({ $type: 'UpdateStyle', style: {}, target: 'b' });
+  });
+
+  it('restores an empty block for a node this session inserted unstyled', async () => {
+    const earlier = [insertChild('root', { id: 'fresh', kind: { $type: 'Heading' } })];
+    const undo = inverseOf(
+      updateStyle('fresh', { tone: 'Loud' }),
+      tree(),
+      earlier,
+      await styledBase(),
+    );
+    expect(expectOk(undo)['style']).toEqual({});
+  });
+
+  it('finds a style edit nested inside a batch', async () => {
+    const earlier = [batch([updateStyle('a', { tone: 'Success' }), updateProp('a', 'Text', 'x')])];
+    const undo = inverseOf(
+      updateStyle('a', { tone: 'Danger' }),
+      tree(),
+      earlier,
+      await styledBase(),
+    );
+    expect(expectOk(undo)['style']).toEqual({ tone: 'Success' });
+  });
+});
+
+describe('UpdateStyle refuses when nothing can answer, and says which nothing', () => {
+  it('names the page as the reason when no tree was captured', () => {
+    const message = expectRefused(
+      inverseOf(updateStyle('a', { tone: 'Danger' }), tree(), [], NO_SOURCES),
+      'NO_PRIOR_VALUE',
+    );
+    expect(message).toContain('no tree was ever captured');
+  });
+
+  it('refuses once another writer has overtaken the captured base', () => {
+    const message = expectRefused(
+      inverseOf(updateStyle('a', { tone: 'Danger' }), tree(), [], {
+        base: STALE,
+        captured: new Map(),
+      }),
+      'NO_PRIOR_VALUE',
+    );
+    expect(message).toContain('another writer changed this page');
+  });
+
+  it('refuses a node the captured tree does not hold', async () => {
+    const message = expectRefused(
+      inverseOf(updateStyle('ghost', { tone: 'Danger' }), tree(), [], await styledBase()),
+      'NO_PRIOR_VALUE',
+    );
+    expect(message).toContain('not in the captured base tree');
+  });
+
+  it('refuses a recorded op that names no node', async () => {
+    expectRefused(
+      inverseOf({ $type: 'UpdateStyle', style: {} }, tree(), [], await styledBase()),
+      'MALFORMED_OP',
+    );
+  });
+
+  it('refuses a recorded op carrying no style block', async () => {
+    // Checked on the RECORDED op, not only on what would be restored: an entry
+    // describing no change has nothing coherent to reverse, even here where the
+    // captured base knows perfectly well what `a` was styled with.
+    expectRefused(
+      inverseOf({ $type: 'UpdateStyle', target: 'a' }, tree(), [], await styledBase()),
+      'MALFORMED_OP',
+    );
+  });
+
+  it('does not fall past a malformed earlier style edit to an older answer', async () => {
+    // The malformed op is the closest answer in time. Skipping it would restore
+    // a block a later edit had already superseded — an undo that succeeds and
+    // lands the node somewhere nobody chose.
+    const earlier: TreeOpJson[] = [
+      updateStyle('a', { tone: 'Success' }),
+      { $type: 'UpdateStyle', target: 'a', style: 'not a block' },
+    ];
+    const message = expectRefused(
+      inverseOf(updateStyle('a', { tone: 'Danger' }), tree(), earlier, await styledBase()),
+      'NO_PRIOR_VALUE',
+    );
+    expect(message).toContain('carries no style block');
+  });
+});
+
+describe('priorStyle', () => {
+  it('stops searching at the node origin', async () => {
+    // An `UpdateStyle` recorded against an id BEFORE the node of that id was
+    // inserted cannot be about this node, so the search must not reach it.
+    const earlier = [
+      updateStyle('recycled', { tone: 'Danger' }),
+      insertChild('root', { id: 'recycled', kind: { $type: 'Heading' } }),
+    ];
+    expect(priorStyle('recycled', earlier, await styledBase())).toEqual({ known: true, block: {} });
+  });
+
+  it('reports honestly, with a reason, when nothing can answer', () => {
+    const prior = priorStyle('a', [], NO_SOURCES);
+    expect(prior.known).toBe(false);
+    if (prior.known) return;
+    expect(prior.why).toContain('no earlier edit in this recording styled');
   });
 });
 

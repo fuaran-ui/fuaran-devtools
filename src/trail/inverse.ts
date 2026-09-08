@@ -39,6 +39,13 @@
 //                      resolve through the same walk the editor reads by
 //                      (`panel/nodeJson`'s `valueAtPath`), so there is one path
 //                      grammar in this build and not two.
+//    UpdateStyle       inverts against the BLOCK the node actually carried, by
+//                      the same three-source search and through the same
+//                      accessor the style editor reads by (`styleBlock`). The
+//                      op replaces the whole block, so the whole prior block is
+//                      the complete answer — there is no per-token arm to get
+//                      partially right. See `priorStyle` for the one place this
+//                      is deliberately more total than `UpdateProp`.
 //    RemoveNode        inverts by re-inserting the CAPTURED SUBTREE at the
 //                      position the snapshot recorded, composed through
 //                      `edit/ops`' own `insertOp` so the placement leg is
@@ -77,11 +84,12 @@ import {
   removeNode,
   reorderChildren,
   updateProp,
+  updateStyle,
   type Placement,
   type TreeOpJson,
 } from '../edit/ops.js';
 import { findNode, parentOf, siblingIds } from '../panel/treeModel.js';
-import { valueAtPath } from '../panel/nodeJson.js';
+import { styleBlock, valueAtPath } from '../panel/nodeJson.js';
 import { findWireNode, NOT_ATTEMPTED, type Capture } from './capture.js';
 
 /**
@@ -95,7 +103,13 @@ import { findWireNode, NOT_ATTEMPTED, type Capture } from './capture.js';
  * is somebody else's edit and no local action changes it.
  */
 export type InverseRefusalClass =
-  /** Nothing in the recording or the captured base knows what the field held. */
+  /**
+   * Nothing in the recording or the captured base knows what the field — or
+   * the style block — held. One class rather than two: the next action is the
+   * same either way (the page must serve `read.nodeJson`, or the base capture
+   * must not have been overtaken), and §8.4's rule for separating classes is
+   * that they imply DIFFERENT next actions.
+   */
   | 'NO_PRIOR_VALUE'
   /** The removed subtree was not captured, so there is nothing to put back. */
   | 'NO_CAPTURED_SUBTREE'
@@ -240,6 +254,93 @@ export const priorValue = (
     : { known: true, value: held };
 };
 
+/** The style block that was there, or — when it is not known — why not. */
+export type PriorStyle =
+  | { readonly known: true; readonly block: Readonly<Record<string, unknown>> }
+  | { readonly known: false; readonly why: string };
+
+/**
+ * The WHOLE style block `target` carried before the style edit being undone.
+ *
+ * The same three sources as `priorValue`, in the same order and for the same
+ * reasons: an earlier `UpdateStyle` in this recording carries the block it
+ * replaced the previous one with, a node this session INSERTED carries the
+ * block it was born with, and otherwise the captured base tree holds the block
+ * the page started with. The search stops at the insert either way — nothing
+ * before a node existed can have styled it.
+ *
+ * ── Why this is TOTAL where `priorValue` refuses ───────────────────────────
+ *
+ * `UpdateProp` cannot express "make this optional absent again", so a field the
+ * captured tree does not carry is NOT KNOWN there: setting it null would be a
+ * different document, and claiming to restore it would be a fabrication.
+ *
+ * The style block has no such gap, because `UpdateStyle` replaces the block
+ * whole and the empty block is a value it can carry. A node with no `style`
+ * member and a node with an empty one hold the same TOKEN SET — which is what
+ * this op addresses — and `panel/nodeJson`'s `styleBlock` already reads them
+ * identically, on both the reading and the writing side: the style editor
+ * itself emits `{}` when a user clears the last token. So restoring `{}` is
+ * the spelling this build already uses for "no tokens", not an invention made
+ * up at undo time.
+ *
+ * What is NOT claimed, stated because the difference is real and small: whether
+ * a host re-encodes an emptied block as an absent `style` member or as `{}` is
+ * the host's own canonical encoding (§7.7 rule 1), and nothing here decides it.
+ * The claim is that the node ends up carrying the tokens it carried before.
+ */
+export const priorStyle = (
+  target: string,
+  earlier: readonly TreeOpJson[],
+  sources: InverseSources = NO_SOURCES,
+): PriorStyle => {
+  for (let index = earlier.length - 1; index >= 0; index -= 1) {
+    const candidates = flattenOps(earlier[index]!);
+    for (let inner = candidates.length - 1; inner >= 0; inner -= 1) {
+      const op = candidates[inner]!;
+      if (op['$type'] === 'UpdateStyle' && op['target'] === target) {
+        const block = op['style'];
+        // Unreachable through this panel — `edit/ops`' `updateStyle` takes a
+        // record — so this is totality rather than a case anyone has seen. It
+        // does NOT fall through to an older source: this op is the closest
+        // answer in time, and skipping past a malformed one would restore a
+        // block that was superseded.
+        return isObject(block)
+          ? { known: true, block }
+          : {
+              known: false,
+              why:
+                `the most recent style edit to '${target}' in this recording carries no style ` +
+                'block, so what it replaced cannot be recovered',
+            };
+      }
+      if (op['$type'] === 'InsertChild') {
+        const child = op['child'];
+        if (!isObject(child) || child['id'] !== target) continue;
+        return { known: true, block: styleBlock(child) };
+      }
+    }
+  }
+
+  if (!sources.base.ok)
+    return {
+      known: false,
+      why:
+        `no earlier edit in this recording styled '${target}' and ` +
+        `${sources.base.reason}, so the block it carried cannot be recovered`,
+    };
+
+  const node = findWireNode(sources.base.node, target);
+  return node === undefined
+    ? {
+        known: false,
+        why:
+          `no earlier edit in this recording styled '${target}' and '${target}' is not in the ` +
+          'captured base tree, so the block it carried cannot be recovered',
+      }
+    : { known: true, block: styleBlock(node) };
+};
+
 /** Put `target` back under the parent it had in `treeBefore`, in its old place. */
 const restoreParent = (target: string, treeBefore: TreeSnapshot): Inverse => {
   const parent = parentOf(treeBefore, target);
@@ -286,6 +387,21 @@ export const inverseOf = (
       if (!prior.known)
         return refuse('NO_PRIOR_VALUE', `This edit cannot be undone: ${prior.why}.`);
       return { ok: true, op: updateProp(target, path, prior.value) };
+    }
+
+    case 'UpdateStyle': {
+      const target = str(op['target']);
+      if (target === undefined)
+        return refuse('MALFORMED_OP', 'The recorded style edit names no node.');
+      // Checked on the RECORDED op rather than only on what is restored: an
+      // entry whose own block is missing describes no change, so there is
+      // nothing coherent to reverse even when a prior block is known.
+      if (!isObject(op['style']))
+        return refuse('MALFORMED_OP', 'The recorded style edit carries no style block.');
+      const prior = priorStyle(target, earlier, sources);
+      if (!prior.known)
+        return refuse('NO_PRIOR_VALUE', `This style edit cannot be undone: ${prior.why}.`);
+      return { ok: true, op: updateStyle(target, prior.block) };
     }
 
     case 'InsertChild': {

@@ -24,6 +24,7 @@ import {
   type EditContext,
 } from '../src/panel/editSurface.js';
 import { deriveSchema } from '../src/panel/schemaSource.js';
+import { guidanceFor } from '../src/panel/refusal.js';
 import { readWireSchema } from './support/corpus.js';
 
 const derived = deriveSchema(readWireSchema())!;
@@ -93,6 +94,15 @@ const rowFor = (section: HTMLElement, name: string): HTMLElement =>
 const controlIn = (row: HTMLElement): HTMLInputElement | HTMLSelectElement =>
   row.querySelector('input, select') as HTMLInputElement | HTMLSelectElement;
 
+const markIn = (row: HTMLElement): HTMLElement => row.querySelector('.field-dirty') as HTMLElement;
+
+/** Set a control's value the way a user does — the events the panel listens on. */
+const type = (input: HTMLInputElement | HTMLSelectElement, value: string): void => {
+  input.value = value;
+  input.dispatchEvent(new Event('input'));
+  input.dispatchEvent(new Event('change'));
+};
+
 /** Type into a row's control and press its own Set button. */
 const setField = (section: HTMLElement, name: string, value: string): void => {
   const row = rowFor(section, name);
@@ -158,6 +168,89 @@ describe('the property editor shows what is there before changing it', () => {
     const row = rowFor(section, 'Text');
     expect(row.querySelector('input')).toBeNull();
     expect(row.querySelector('.field-why')?.textContent).toContain('discard the binding');
+  });
+});
+
+describe('the dirty indicator: what you see against what the page holds', () => {
+  it('shows no mark on a control still holding the read value', () => {
+    const section = renderPropertyEditor(context({ nodeJson: read(headingJson()) }));
+    expect(markIn(rowFor(section, 'Text')).hidden).toBe(true);
+  });
+
+  it('marks the row once the control differs from the read', () => {
+    const section = renderPropertyEditor(context({ nodeJson: read(headingJson()) }));
+    const row = rowFor(section, 'Text');
+    type(controlIn(row), 'Channels');
+    expect(markIn(row).hidden).toBe(false);
+  });
+
+  it('clears the mark when the control is typed back to what was read', () => {
+    // Against the READ, never against the last thing committed. A mark that
+    // reset on commit would read clean at exactly the moment a refusal left the
+    // control and the page genuinely disagreeing.
+    const section = renderPropertyEditor(context({ nodeJson: read(headingJson()) }));
+    const row = rowFor(section, 'Text');
+    type(controlIn(row), 'Channels');
+    type(controlIn(row), 'Revenue');
+    expect(markIn(row).hidden).toBe(true);
+  });
+
+  it('agrees with the commit path — a marked row is one that sends an op', async () => {
+    // The mark and the behaviour are the same comparison, so this is the
+    // assertion that keeps them from drifting apart: a marked row emits, and an
+    // unmarked one answers "unchanged" and sends nothing.
+    const commit = okCommit();
+    const section = renderPropertyEditor(context({ commit, nodeJson: read(headingJson()) }));
+    const row = rowFor(section, 'Text');
+
+    expect(markIn(row).hidden).toBe(true);
+    (row.querySelector('button') as HTMLButtonElement).click();
+    await vi.waitFor(() => expect(section.textContent).toContain('Unchanged'));
+    expect(commit).not.toHaveBeenCalled();
+
+    type(controlIn(row), 'Channels');
+    expect(markIn(row).hidden).toBe(false);
+    (row.querySelector('button') as HTMLButtonElement).click();
+    await vi.waitFor(() => expect(commit).toHaveBeenCalled());
+  });
+
+  it('marks a toggle from its checked state, not from its text', () => {
+    // A checkbox's `value` never moves, so a mark comparing that would never
+    // fire. It compares what `displayOf` compares, which is the checked state.
+    const section = renderPropertyEditor(
+      context({
+        node: { id: 'list-1', kind: 'List', bindings: [], childIds: [] },
+        nodeJson: read({ id: 'list-1', kind: { $type: 'List', ordered: false, items: [] } }),
+      }),
+    );
+    const row = rowFor(section, 'Ordered');
+    const input = controlIn(row) as HTMLInputElement;
+    expect(input.type).toBe('checkbox');
+    expect(markIn(row).hidden).toBe(true);
+    input.checked = true;
+    input.dispatchEvent(new Event('change'));
+    expect(markIn(row).hidden).toBe(false);
+  });
+
+  it('offers no mark at all in set-only mode', () => {
+    // There is no page value to be dirty against, so a mark comparing a typed
+    // value to a blank control would claim a comparison nothing performed.
+    const section = renderPropertyEditor(context({ nodeJson: undefined }));
+    const row = rowFor(section, 'Text');
+    type(controlIn(row), 'Channels');
+    expect(row.querySelector('.field-dirty')).toBeNull();
+  });
+
+  it('marks each style token separately, because the commit is one button', () => {
+    const section = renderStyleEditor(
+      context({ nodeJson: read(headingJson({ style: { emphasis: 'Loud', tone: 'Success' } })) }),
+    );
+    const tone = rowFor(section, 'tone');
+    type(controlIn(tone), 'Critical');
+    expect(markIn(tone).hidden).toBe(false);
+    // The untouched token is what a one-token edit preserves, and the absence
+    // of a mark beside it is how the user can see that before pressing Set.
+    expect(markIn(rowFor(section, 'emphasis')).hidden).toBe(true);
   });
 });
 
@@ -345,6 +438,39 @@ describe('the style editor commits the whole merged block', () => {
     (section.querySelector('button') as HTMLButtonElement).click();
     await vi.waitFor(() => expect(section.textContent).toContain('Unchanged'));
     expect(commit).not.toHaveBeenCalled();
+  });
+
+  it('shows a refused style edit where the action was, by class', async () => {
+    // The same discipline the property rows follow, asserted on this surface
+    // too: the class, the host's own message, and the guidance for that class,
+    // rendered beside the button that was pressed. §8.4 separates the classes
+    // because each implies a different next action; a toast would collapse them
+    // AND move the answer away from the question.
+    const section = renderStyleEditor(
+      context({
+        commit: async () => ({
+          ok: false,
+          class: 'POLICY_DENIED',
+          message: 'The host does not permit styling from the inspector.',
+        }),
+        nodeJson: styled(),
+      }),
+    );
+    (controlIn(rowFor(section, 'tone')) as HTMLSelectElement).value = 'Critical';
+    (section.querySelector('button') as HTMLButtonElement).click();
+
+    await vi.waitFor(() => expect(section.querySelector('.refusal')).not.toBeNull());
+    const refusal = section.querySelector('.refusal') as HTMLElement;
+    expect(refusal.querySelector('.refusal-class')?.textContent).toBe('POLICY_DENIED');
+    expect(refusal.querySelector('.refusal-message')?.textContent).toBe(
+      'The host does not permit styling from the inspector.',
+    );
+    expect(refusal.querySelector('.refusal-guidance')?.textContent).toBe(
+      guidanceFor('POLICY_DENIED'),
+    );
+    // And the controls are untouched: §8.3 says a refused op left the tree
+    // unchanged, so the panel must not act as though anything moved.
+    expect((controlIn(rowFor(section, 'tone')) as HTMLSelectElement).value).toBe('Critical');
   });
 
   it('merges over the FRESH block when the tree moved', async () => {

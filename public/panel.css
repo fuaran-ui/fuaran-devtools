@@ -407,6 +407,22 @@ body {
   flex: 0 0 auto;
 }
 
+/* "What you are looking at is not what the page holds." Deliberately a small
+   mark beside the control rather than a restyled input: the control's own
+   border already means "this is editable", and recolouring it would make an
+   uncommitted edit look like a validation state. */
+.field-dirty {
+  flex: 0 0 auto;
+  color: var(--accent);
+  font-size: 10px;
+  line-height: 1;
+  cursor: default;
+}
+
+.field-dirty[hidden] {
+  display: none;
+}
+
 .field-commit {
   padding: 2px 8px;
   border: 1px solid var(--line);

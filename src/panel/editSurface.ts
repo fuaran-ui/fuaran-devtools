@@ -12,9 +12,11 @@
 //  `read.nodeJson` (§7.7) returns the focused node's own canonical wire JSON,
 //  so the property editor is READ-MODIFY-WRITE: a field shows what is there
 //  before it is changed, and a commit emits an op only for what the user
-//  actually changed — diffed against the read, never against blank. Three
-//  things follow, and each was withheld before this read existed rather than
-//  approximated:
+//  actually changed — diffed against the read, never against blank. That diff
+//  is also VISIBLE, per field, so what a commit will and will not send is
+//  legible before the button is pressed rather than reported afterwards. Three
+//  further things follow, and each was withheld before this read existed rather
+//  than approximated:
 //
 //   * STYLE EDITING EXISTS. `UpdateStyle` replaces a node's whole block and has
 //     no per-token path, so one token could only be committed by discarding
@@ -201,6 +203,39 @@ const displayOf = (input: HTMLInputElement | HTMLSelectElement): string =>
     : input.value;
 
 /**
+ * The marker saying this control no longer shows what the page holds.
+ *
+ * Measured against the SEED — the display the read put there — and never
+ * against the last committed value, so it answers the question the user is
+ * actually asking: does what I am looking at differ from what the page has? An
+ * indicator that reset on commit would go clean the moment an op was refused,
+ * which is precisely when the divergence is real.
+ *
+ * It is the same comparison the commit path makes (`displayOf(input) ===
+ * seeded` decides whether anything is sent at all), so the mark and the
+ * behaviour cannot disagree: a row that shows the mark is a row that will emit
+ * an op, and a row that does not is one that will answer "unchanged".
+ *
+ * Only ever attached where a READ arrived. In set-only mode there is no page
+ * value to be dirty against, and a mark comparing a typed value to a blank
+ * control would claim a comparison nothing performed.
+ */
+const dirtyMarker = (input: HTMLInputElement | HTMLSelectElement, seeded: string): HTMLElement => {
+  const marker = el('span', 'field-dirty', '●');
+  marker.title = 'Changed from what the page holds — not committed yet.';
+  marker.setAttribute('aria-label', 'changed, not committed');
+  const sync = (): void => {
+    marker.hidden = displayOf(input) === seeded;
+  };
+  sync();
+  // Both events: `input` covers typing, `change` covers a checkbox and a
+  // select, and a control that fires both simply syncs twice to the same value.
+  input.addEventListener('input', sync);
+  input.addEventListener('change', sync);
+  return marker;
+};
+
+/**
  * The read to derive an edit from, taken again when the tree has moved.
  *
  * `read at revision r, commit intended-at-r`: the panel holds the revision the
@@ -256,6 +291,7 @@ const appendRow = (section: HTMLElement, context: EditContext, row: EditableRow)
   const input = controlFor(row.label, row.control, row.read);
   const seeded = displayOf(input);
   line.appendChild(input);
+  if (context.nodeJson !== undefined) line.appendChild(dirtyMarker(input, seeded));
 
   const commit = el('button', 'field-commit', 'Set');
   commit.type = 'button';
@@ -628,8 +664,14 @@ export const renderStyleEditor = (context: EditContext): HTMLElement => {
       continue;
     }
     const input = controlFor(token.wireName, token.control, held);
-    controls.set(token.wireName, { input, seeded: displayOf(input) });
+    const seeded = displayOf(input);
+    controls.set(token.wireName, { input, seeded });
     line.appendChild(input);
+    // Marked per TOKEN even though the commit is one button for the whole
+    // block: the untouched-contributes-nothing rule is what makes a one-token
+    // edit preserve the rest, so which tokens are touched is exactly what the
+    // user needs to see before pressing Set style.
+    line.appendChild(dirtyMarker(input, seeded));
     section.appendChild(line);
   }
 
