@@ -1,8 +1,8 @@
 // ============================================================================
-//  relay/protocol — the `relay@1.4` envelope, its closed sets, and its guards.
+//  relay/protocol — the `relay@1.5` envelope, its closed sets, and its guards.
 //
 //  This module is a direct, dependency-free transcription of the normative
-//  DevTools relay contract (`DEVTOOLS_RELAY.md`, profile `relay@1.4`). It is
+//  DevTools relay contract (`DEVTOOLS_RELAY.md`, profile `relay@1.5`). It is
 //  deliberately written FROM THE SPEC and imports nothing from any host — the
 //  contract's own §1.2 posture is that "a relay implementation is written from
 //  this document; it does not need to read any host's source".
@@ -16,14 +16,16 @@
  * The relay profile this implementation speaks (DEVTOOLS_RELAY §5.1) — "the
  * HIGHEST profile it can serve", not the only one.
  *
- * This is `relay@1.4` because this build declares `treeSource` (§6.5) and can
- * raise `UPSTREAM_UNAVAILABLE` (§9.3), and a peer that uses a minor's
- * vocabulary while declaring an earlier minor is misdescribing itself. §5.1's
- * superset rule is what makes the claim honest in the other direction: a 1.4
- * peer serves any minor at or below its own, which `selectSessionProfile` below
- * turns into a per-session decision.
+ * This is `relay@1.5` because this build recognises the `hatches` request type
+ * (§7.8) and forwards it when the page's surface reports one; before that it
+ * was `relay@1.4`, because it declares `treeSource` (§6.5) and can raise
+ * `UPSTREAM_UNAVAILABLE` (§9.3). A peer that uses a minor's vocabulary while
+ * declaring an earlier minor is misdescribing itself. §5.1's superset rule is
+ * what makes the claim honest in the other direction: a 1.5 peer serves any
+ * minor at or below its own, which `selectSessionProfile` below turns into a
+ * per-session decision.
  */
-export const RELAY_PROFILE = 'relay@1.4';
+export const RELAY_PROFILE = 'relay@1.5';
 
 /**
  * The profiles this build speaks, most-preferred first — the `accepts` array of
@@ -35,6 +37,7 @@ export const RELAY_PROFILE = 'relay@1.4';
  * serving.
  */
 export const ACCEPTED_PROFILES = [
+  'relay@1.5',
   'relay@1.4',
   'relay@1.3',
   'relay@1.2',
@@ -68,6 +71,10 @@ export const REQUEST_TYPES = [
   'read.findNodes',
   'read.affordances',
   'read.nodeJson',
+  // `relay@1.5` (§7.8) — the host's runtime escape-hatch report. A bare token
+  // like `apply`, because it asks the host about its own posture rather than
+  // about the tree.
+  'hatches',
   'apply',
   'subscribe',
   'unsubscribe',
@@ -121,6 +128,7 @@ export const REQUEST_MINOR: Readonly<Record<RequestType, number>> = {
   unsubscribe: 0,
   'read.affordances': 1,
   'read.nodeJson': 3,
+  hatches: 5,
 };
 
 /** The minor a capability's request type arrived at — see {@link REQUEST_MINOR}. */

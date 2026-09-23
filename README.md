@@ -80,7 +80,7 @@ that is not there.
 
 ## How it works
 
-The extension speaks the **`relay@1.4`** page↔extension contract, specified in
+The extension speaks the **`relay@1.5`** page↔extension contract, specified in
 [`DEVTOOLS_RELAY.md`](https://github.com/fuaran-ui/fuaran-ui-specification) alongside the Fuaran UI
 wire format. Four pieces:
 

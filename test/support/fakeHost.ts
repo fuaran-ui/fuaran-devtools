@@ -309,6 +309,55 @@ export const taggedHost: HostSurface = {
  * reconstruction. That is what §6.5 rule 2 forbids, and a fake that offered one
  * would build into the test suite the exact thing the rule exists to prevent.
  */
+/**
+ * A page host whose surface reports its runtime escape-hatch report (§7.8,
+ * `relay@1.5`) — the document the HOST's producer builds, which this peer
+ * forwards and never writes.
+ *
+ * The fake plays the host's producer, so its accounts are its own sentences:
+ * what the corpus pins, and what the page peer is answerable for, is that the
+ * document arrives carried rather than re-described — `kind`, `version`,
+ * `section`, and each finding's `predicate`, `hatch` and `state` in order. The
+ * two worlds differ only in the registry the producer was handed: one guest
+ * renderer registered (that finding `open`), or none offered at all (that
+ * finding `undecided`, never `closed`).
+ */
+export const hatchesHostWith = (registry: 'one-registered' | 'not-offered'): HostSurface => ({
+  ...nodeJsonHost,
+  hatches: () => ({
+    kind: 'hatchSection',
+    version: 1,
+    section: 'runtime',
+    findings: [
+      registry === 'one-registered'
+        ? {
+            predicate: 'custom-renderer-registered',
+            hatch: 2,
+            state: 'open',
+            account: '1 custom renderer(s) registered: charts/sparkline',
+          }
+        : {
+            predicate: 'custom-renderer-registered',
+            hatch: 2,
+            state: 'undecided',
+            account: 'the host did not offer its registry to this report',
+          },
+      {
+        predicate: 'custom-hash-floor-permissive',
+        hatch: 2,
+        state: 'closed',
+        account: "the content-hash floor is 'enforced'",
+      },
+      {
+        predicate: 'development-surface-live',
+        hatch: 12,
+        state: 'closed',
+        account: 'the introspection surface is not live',
+      },
+    ],
+  }),
+});
+
 export const upstreamHost: HostSurface = {
   version: '0.1.0',
   treeSource: 'upstream',

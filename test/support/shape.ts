@@ -65,6 +65,14 @@ const ENUMERATED_KEYS = new Set([
   'expression',
   'subscriptionId',
   'applied',
+  // §7.8, since `relay@1.5`: the `hatchSection` document's closed vocabulary.
+  // `state` above all — the three-valued set rule 2 exists to keep from
+  // collapsing to two — and the section and predicate names the finding is
+  // identified by. `account` is deliberately absent: it is the host
+  // producer's prose, compared by type as `message` is.
+  'section',
+  'predicate',
+  'state',
 ]);
 
 const jsonType = (value: unknown): string => {

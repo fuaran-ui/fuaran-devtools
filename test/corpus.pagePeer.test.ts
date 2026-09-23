@@ -25,6 +25,7 @@ import {
   applyHostWith,
   bareHost,
   encodeFailingHost,
+  hatchesHostWith,
   nodeJsonHost,
   taggedHost,
   unreachableUpstreamHost,
@@ -82,6 +83,17 @@ const SERVED: Record<string, HostSurface | undefined> = {
   'read-node-json': nodeJsonHost,
   'read-node-json-subtree': nodeJsonHost,
   'refusal-encode-failed': encodeFailingHost,
+
+  // ── `relay@1.5` — the host's runtime escape-hatch report (§7.8) ──
+  //
+  // This peer relays the report and never produces one, so these are driven
+  // against a surface that HAS one. What passes here is evidence that the
+  // document is carried rather than re-described, and that the handshake
+  // offers it at a 1.5 session — the earlier handshakes above stay on hosts
+  // without it, and must not name it.
+  'hello-hatches': hatchesHostWith('one-registered'),
+  'hatches-open': hatchesHostWith('one-registered'),
+  'hatches-undecided': hatchesHostWith('not-offered'),
 
   // ── `relay@1.4` — the peer whose tree is not in the page (§6.5) ──
   //

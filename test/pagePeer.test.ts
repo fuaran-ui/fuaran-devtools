@@ -9,7 +9,13 @@ import {
   type HostSurface,
 } from '../src/relay/pagePeer.js';
 import { request } from '../src/relay/protocol.js';
-import { applyHost, bareHost, taggedHost, unwiredApplyHost } from './support/fakeHost.js';
+import {
+  applyHost,
+  bareHost,
+  hatchesHostWith,
+  taggedHost,
+  unwiredApplyHost,
+} from './support/fakeHost.js';
 
 const IDENTITY = { host: 'fuaran-devtools-page-relay', hostVersion: '0.1.0' };
 // NOT a default parameter: `peer(undefined)` would then silently mean
@@ -118,6 +124,39 @@ describe('capability advertisement (§6.3, §6.4)', () => {
     const denied = thin.handle(request('c-1', 'read.findNodes', { kind: 'Metric' }));
     expect(denied?.payload['class']).toBe('CAPABILITY_ABSENT');
     expect(denied?.payload['detail']).toEqual({ capability: 'read.findNodes' });
+  });
+});
+
+describe("hatches — the host's report, forwarded (§7.8, relay@1.5)", () => {
+  const hatchesHost = hatchesHostWith('one-registered');
+
+  it('carries the document the surface built, unchanged — nothing added, nothing dropped', () => {
+    const reply = peer(hatchesHost).handle(request('c-1', 'hatches', {}));
+    expect(reply?.type).toBe('hatches.ok');
+    // Rule 1: this peer relays the report and never re-describes it.
+    expect(JSON.stringify(reply?.payload)).toBe(JSON.stringify(hatchesHost.hatches?.()));
+  });
+
+  it('is offered only at a relay@1.5 session', () => {
+    const at14 = peer(hatchesHost).handle({
+      ...request('c-1', 'hello', { accepts: ['relay@1.4'] }),
+      $relay: 'relay@1.4',
+    });
+    expect(at14?.payload['capabilities']).not.toContain('hatches');
+    const at15 = peer(hatchesHost).handle(request('c-2', 'hello', { accepts: ['relay@1.5'] }));
+    expect(at15?.payload['capabilities']).toContain('hatches');
+  });
+
+  it('is CAPABILITY_ABSENT over a surface with no report — never UNKNOWN_MESSAGE', () => {
+    const denied = peer(bareHost).handle(request('c-1', 'hatches', {}));
+    expect(denied?.payload['class']).toBe('CAPABILITY_ABSENT');
+    expect(denied?.payload['detail']).toEqual({ capability: 'hatches' });
+  });
+
+  it('refuses rather than forwards a report that is not a document', () => {
+    const broken = peer({ ...bareHost, hatches: () => 'hatches open: none' });
+    const denied = broken.handle(request('c-1', 'hatches', {}));
+    expect(denied?.payload['class']).toBe('CAPABILITY_ABSENT');
   });
 });
 

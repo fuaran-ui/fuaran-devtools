@@ -108,6 +108,12 @@ export interface HostSurface {
    * default.
    */
   upstreamReachable?(): boolean;
+  /**
+   * `relay@1.5` — the host's own runtime escape-hatch report (§7.8): the
+   * `hatchSection` document its producer built. Forwarded as it stands, never
+   * re-described (§7.8 rule 1), and asked per request (rule 3).
+   */
+  hatches?(): unknown;
 }
 
 /** How this peer emits unsolicited `changed` events (§8.5). */
@@ -549,6 +555,11 @@ export const capabilitiesOf = (surface: HostSurface): Capability[] => {
   if (typeof surface.inspectTree === 'function') advertised.push('read.tree');
   if (typeof surface.findNodes === 'function') advertised.push('read.findNodes');
   if (typeof surface.getNodeJson === 'function') advertised.push('read.nodeJson');
+  // §7.8 — derived like the reads: a surface that reports its hatches is
+  // offered to a `relay@1.5` session, and one that does not simply is not.
+  // Listed where the reference hosts list it, after the reads and before the
+  // write side, so a handshake reads the same from every peer.
+  if (typeof surface.hatches === 'function') advertised.push('hatches');
   if (typeof surface.apply === 'function' && surface.canApply === true) advertised.push('apply');
   if (typeof surface.subscribe === 'function') advertised.push('subscribe');
   return advertised;
@@ -730,6 +741,23 @@ export const createPagePeer = (
         // the payload may already have moved past — the one direction of error
         // that reports a stale read as fresh.
         return ok(id, type, { node: outcome.node, treeRevision: treeRevision(live) });
+      }
+
+      case 'hatches': {
+        // §7.8 rule 1 — the document is CARRIED, not re-described: whatever the
+        // host's producer built is the payload, members and order untouched,
+        // with nothing added (no summary, no host label, no revision token).
+        // This peer relays the report and does not produce one, so it has no
+        // vocabulary of its own to impose; it checks only that what came back
+        // is an object a payload can be. Anything else is a surface that
+        // advertised a report it could not produce — the same honesty
+        // `read.tree` applies to a surface that returns no snapshot.
+        const report = live.hatches?.();
+        if (typeof report !== 'object' || report === null || Array.isArray(report))
+          return deny('CAPABILITY_ABSENT', 'The host surface produced no escape-hatch report.', {
+            capability: 'hatches',
+          });
+        return ok(id, type, report as Readonly<Record<string, unknown>>);
       }
 
       case 'read.findNodes': {
