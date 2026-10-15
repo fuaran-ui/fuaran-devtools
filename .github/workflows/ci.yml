@@ -29,11 +29,11 @@ jobs:
       run:
         working-directory: fuaran-devtools
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           path: fuaran-devtools
 
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           repository: fuaran-ui/fuaran-ui-specification
           path: wire-format-fixtures
