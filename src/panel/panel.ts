@@ -47,6 +47,8 @@ import type { WireRead } from '../trail/capture.js';
 import { TRAIL_FILENAME } from '../trail/sessionLog.js';
 import { Dispatch, DEVTOOLS_ACTOR } from '../dispatch/dispatch.js';
 import { DEFAULT_ACTOR_CLASS, type ActorClass } from '../relay/protocol.js';
+import { PUBLISHED_RECORDS_EXPRESSION } from '../repro/boardSnapshot.js';
+import { copyRepro, writeClipboard } from './repro.js';
 
 const connection = new PanelConnection(chrome.devtools.inspectedWindow.tabId);
 
@@ -63,6 +65,7 @@ const cardPane = byId('card');
 const historyBar = byId('history');
 const refreshButton = byId('refresh') as HTMLButtonElement;
 const pickButton = byId('pick') as HTMLButtonElement;
+const copyReproButton = byId('copy-repro') as HTMLButtonElement;
 
 // ─── State ──────────────────────────────────────────────────────────
 
@@ -850,6 +853,30 @@ pickButton.addEventListener('click', () => {
 });
 
 refreshButton.addEventListener('click', () => void refresh());
+
+// ─── Copy repro (Phase 1885) ────────────────────────────────────────
+
+/** Evaluate in the inspected page — a DOM read, no page code called. */
+const evalInPage = (expression: string): Promise<unknown> =>
+  new Promise((resolve, reject) =>
+    chrome.devtools.inspectedWindow.eval(expression, (result, failure) => {
+      if (failure !== undefined && failure !== null) reject(new Error('page evaluation failed'));
+      else resolve(result);
+    }),
+  );
+
+copyReproButton.addEventListener('click', () => {
+  void (async () => {
+    const report = await copyRepro({
+      readPublished: () => evalInPage(PUBLISHED_RECORDS_EXPRESSION),
+      readRoot: async () =>
+        tree === undefined ? { ok: false, why: 'not-offered' } : readForTrail(tree.id),
+      copy: (text) => writeClipboard(document, text),
+    });
+    copyReproButton.title = report.message;
+    statusBar.appendChild(el('span', 'detail', report.message));
+  })();
+});
 
 connection.onEvent((event) => {
   if (event.event === 'picked' && event.nodeId !== undefined) {
